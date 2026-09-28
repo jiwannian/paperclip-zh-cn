@@ -1,6 +1,6 @@
 # Paperclip 简体中文界面补丁
 
-为 [Paperclip](https://github.com/paperclipai/paperclip) 提供简体中文界面补丁。补丁基于上游提交 `0f14d261233c545aa6a8a38ec253c498a5130fff`，通过 i18next 增加简体中文和英文 UI 文案、语言偏好记忆及账户菜单语言切换。
+为 [Paperclip](https://github.com/paperclipai/paperclip) 提供简体中文界面补丁。补丁基于上游提交 `0f14d261233c545aa6a8a38ec253c498a5130fff`，通过 i18next 增加简体中文和英文 UI 文案、语言偏好记忆及账户菜单语言切换。首次打开默认使用简体中文；之后可在账户菜单切换为英语，选择会保存在当前浏览器。
 
 ## 覆盖范围
 
