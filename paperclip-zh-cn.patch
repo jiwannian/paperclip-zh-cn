@@ -1,0 +1,1713 @@
+diff --git a/ui/src/App.tsx b/ui/src/App.tsx
+index c1ba938..8358919 100644
+--- a/ui/src/App.tsx
++++ b/ui/src/App.tsx
+@@ -565,15 +565,11 @@ export function OnboardingRoutePage() {
+   }
+ 
+   const title = matchedCompany
+-    ? `Add another agent to ${matchedCompany.name}`
+-    : companies.length > 0
+-      ? "Create another organization"
+-      : "Create your first organization";
++    ? t("ui.onboarding.addAgentTitle", { name: matchedCompany.name })
++    : t(companies.length > 0 ? "ui.onboarding.createAnotherTitle" : "ui.onboarding.createFirstTitle");
+   const description = matchedCompany
+-    ? "Run onboarding again to add an agent and a starter task for this organization."
+-    : companies.length > 0
+-      ? "Run onboarding again to create another organization and seed its first agent."
+-      : "Get started by creating an organization and your first agent.";
++    ? t("ui.onboarding.addAgentDescription")
++    : t(companies.length > 0 ? "ui.onboarding.createAnotherDescription" : "ui.onboarding.createFirstDescription");
+ 
+   return (
+     <div className="mx-auto max-w-xl py-10">
+@@ -587,10 +583,7 @@ export function OnboardingRoutePage() {
+               say why instead of rendering an inert control. */}
+           {!matchedCompany && cloudInstance && !createStackUrl ? (
+             <p className="text-sm text-muted-foreground">
+-              {t("app.cloudCreateUnavailable", {
+-                defaultValue:
+-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+-              })}
++              {t("ui.onboarding.cloudUnavailable")}
+             </p>
+           ) : (
+             <Button
+@@ -611,7 +604,7 @@ export function OnboardingRoutePage() {
+                     : openOnboarding()
+               }
+             >
+-              {matchedCompany ? "Add Agent" : "Start Onboarding"}
++              {matchedCompany ? t("ui.onboarding.addAgent") : t("ui.onboarding.start")}
+             </Button>
+           )}
+         </div>
+@@ -716,10 +709,7 @@ function NoCompaniesStartPage() {
+               send the click, and in-app creation is a 403 floor here. */}
+           {cloudInstance && !createStackUrl ? (
+             <p className="text-sm text-muted-foreground">
+-              {t("app.cloudCreateUnavailable", {
+-                defaultValue:
+-                  "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio.",
+-              })}
++              {t("ui.onboarding.cloudUnavailable")}
+             </p>
+           ) : (
+             <Button
+diff --git a/ui/src/components/LocaleSelector.tsx b/ui/src/components/LocaleSelector.tsx
+new file mode 100644
+index 0000000..9d55528
+--- /dev/null
++++ b/ui/src/components/LocaleSelector.tsx
+@@ -0,0 +1,26 @@
++import { Languages } from "lucide-react";
++import { changeAppLocale, useTranslation } from "@/i18n";
++
++export function LocaleSelector() {
++  const { i18n, t } = useTranslation();
++  const activeLanguage = i18n.resolvedLanguage ?? i18n.language;
++  const value = activeLanguage.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
++
++  return (
++    <label className="flex min-h-8 items-center gap-2.5 rounded-lg px-2.5 text-(length:--text-compact) font-medium text-foreground">
++      <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
++        <Languages className="size-4" aria-hidden="true" />
++      </span>
++      <span className="min-w-0 flex-1">{t("ui.account.language")}</span>
++      <select
++        aria-label={t("ui.account.language")}
++        className="min-w-24 rounded-md border border-border bg-background py-1 pl-2 pr-6 text-xs text-foreground"
++        value={value}
++        onChange={(event) => void changeAppLocale(event.currentTarget.value)}
++      >
++        <option value="en">{t("ui.account.english")}</option>
++        <option value="zh-CN">{t("ui.account.simplifiedChinese")}</option>
++      </select>
++    </label>
++  );
++}
+diff --git a/ui/src/components/SidebarAccountMenu.production.tsx b/ui/src/components/SidebarAccountMenu.production.tsx
+index c96aa2e..7172f8e 100644
+--- a/ui/src/components/SidebarAccountMenu.production.tsx
++++ b/ui/src/components/SidebarAccountMenu.production.tsx
+@@ -10,6 +10,7 @@ import {
+ } from "lucide-react";
+ import type { DeploymentMode } from "@paperclipai/shared";
+ import { Link } from "@/lib/router";
++import { useTranslation } from "@/i18n";
+ import { authApi } from "@/api/auth";
+ import { queryKeys } from "@/lib/queryKeys";
+ import { useCloudInstance } from "@/hooks/useCloudInstance";
+@@ -21,6 +22,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+ import { ThemeToggle } from "./ThemeToggle";
+ import { SidebarServerInfo } from "./SidebarServerInfo";
++import { LocaleSelector } from "./LocaleSelector";
+ 
+ const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
+ const DOCS_URL = "https://docs.paperclip.ing/";
+@@ -107,6 +109,7 @@ export function SidebarAccountMenu({
+   open: controlledOpen,
+   onOpenChange,
+ }: SidebarAccountMenuProps) {
++  const { t } = useTranslation();
+   const isCloud = Boolean(useCloudInstance());
+   const [internalOpen, setInternalOpen] = useState(false);
+   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+@@ -121,9 +124,10 @@ export function SidebarAccountMenu({
+ 
+   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
+ 
+-  const displayName = session?.user.name?.trim() || "Board";
+-  const secondaryLabel =
+-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
++  const displayName = session?.user.name?.trim() || t("ui.account.board");
++  const secondaryLabel = session?.user.email?.trim() || (
++    deploymentMode === "authenticated" ? t("ui.account.signedIn") : t("ui.account.localBoard")
++  );
+   const initials = deriveInitials(displayName);
+   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+ 
+@@ -147,7 +151,7 @@ export function SidebarAccountMenu({
+               "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-accent/50 hover:text-foreground",
+               rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+             )}
+-            aria-label="Open account menu"
++            aria-label={t("ui.account.openMenu")}
+           >
+             <Avatar size="sm">
+               {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+@@ -179,27 +183,28 @@ export function SidebarAccountMenu({
+ 
+             <div className="mt-4 space-y-1">
+               <MenuAction
+-                label="View profile"
+-                description="Open your activity, task, and usage ledger."
++                label={t("ui.account.viewProfile")}
++                description={t("ui.account.viewProfileDescription")}
+                 icon={UserRound}
+                 href={profileHref}
+                 onClick={closeNavigationChrome}
+               />
+               <MenuAction
+-                label="Edit profile"
+-                description="Update your display name and avatar."
++                label={t("ui.account.editProfile")}
++                description={t("ui.account.editProfileDescription")}
+                 icon={UserRoundPen}
+                 href={PROFILE_SETTINGS_PATH}
+                 onClick={closeNavigationChrome}
+               />
+               <MenuAction
+-                label="Documentation"
+-                description="Open Paperclip docs in a new tab."
++                label={t("ui.account.documentation")}
++                description={t("ui.account.documentationDescription")}
+                 icon={BookOpen}
+                 href={DOCS_URL}
+                 external
+                 onClick={() => setOpen(false)}
+               />
++              <LocaleSelector />
+               <ThemeToggle variant="menu-action" onAfterToggle={() => setOpen(false)} />
+               {deploymentMode === "authenticated" ? (
+                 <button
+@@ -216,10 +221,10 @@ export function SidebarAccountMenu({
+                   </span>
+                   <span className="min-w-0 flex-1">
+                     <span className="block text-sm font-medium text-foreground">
+-                      {signOutMutation.isPending ? "Signing out..." : "Sign out"}
++                      {signOutMutation.isPending ? t("ui.account.signingOut") : t("ui.account.signOut")}
+                     </span>
+                     <span className="block text-xs text-muted-foreground">
+-                      End this browser session.
++                      {t("ui.account.endSession")}
+                     </span>
+                   </span>
+                 </button>
+@@ -236,13 +241,13 @@ export function SidebarAccountMenu({
+                 href={FEEDBACK_URL}
+                 target="_blank"
+                 rel="noreferrer"
+-                aria-label="Share feedback"
++                aria-label={t("ui.account.shareFeedback")}
+                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-accent/50 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+               >
+                 <Flag className="h-4 w-4" aria-hidden="true" />
+               </a>
+             </TooltipTrigger>
+-            <TooltipContent side="top">Share feedback</TooltipContent>
++            <TooltipContent side="top">{t("ui.account.shareFeedback")}</TooltipContent>
+           </Tooltip>
+         ) : null}
+       </div>
+diff --git a/ui/src/components/SidebarAccountMenu.tsx b/ui/src/components/SidebarAccountMenu.tsx
+index 199e8cb..293a21c 100644
+--- a/ui/src/components/SidebarAccountMenu.tsx
++++ b/ui/src/components/SidebarAccountMenu.tsx
+@@ -11,6 +11,7 @@ import {
+ } from "lucide-react";
+ import type { DeploymentMode } from "@paperclipai/shared";
+ import { Link } from "@/lib/router";
++import { useTranslation } from "@/i18n";
+ import { authApi } from "@/api/auth";
+ import { queryKeys } from "@/lib/queryKeys";
+ import { useCloudInstance } from "@/hooks/useCloudInstance";
+@@ -22,6 +23,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
+ import { ThemeToggle } from "./ThemeToggle";
+ import { SidebarServerInfo } from "./SidebarServerInfo";
++import { LocaleSelector } from "./LocaleSelector";
+ 
+ const PROFILE_SETTINGS_PATH = "/company/settings/instance/profile";
+ const DOCS_URL = "https://docs.paperclip.ing/";
+@@ -113,6 +115,7 @@ export function SidebarAccountMenu({
+   onOpenChange,
+   forceExpanded = false,
+ }: SidebarAccountMenuProps) {
++  const { t } = useTranslation();
+   const isCloud = Boolean(useCloudInstance());
+   const [internalOpen, setInternalOpen] = useState(false);
+   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+@@ -127,9 +130,10 @@ export function SidebarAccountMenu({
+ 
+   const signOutMutation = useSignOut({ onSignedOut: closeNavigationChrome });
+ 
+-  const displayName = session?.user.name?.trim() || "Board";
+-  const secondaryLabel =
+-    session?.user.email?.trim() || (deploymentMode === "authenticated" ? "Signed in" : "Local workspace board");
++  const displayName = session?.user.name?.trim() || t("ui.account.board");
++  const secondaryLabel = session?.user.email?.trim() || (
++    deploymentMode === "authenticated" ? t("ui.account.signedIn") : t("ui.account.localBoard")
++  );
+   const initials = deriveInitials(displayName);
+   const profileHref = `/u/${deriveUserSlug(session?.user.name, session?.user.email, session?.user.id)}`;
+ 
+@@ -153,7 +157,7 @@ export function SidebarAccountMenu({
+                 "flex min-w-0 items-center gap-2.5 rounded-lg text-left text-(length:--text-compact) font-medium text-foreground/80 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
+                 rail ? "w-full px-3 py-2" : "flex-1 px-2 py-1.5",
+               )}
+-              aria-label="Open account menu"
++              aria-label={t("ui.account.openMenu")}
+             >
+               <Avatar size="sm">
+                 {session?.user.image ? <AvatarImage src={session.user.image} alt={displayName} /> : null}
+@@ -185,30 +189,31 @@ export function SidebarAccountMenu({
+ 
+             <div className="flex flex-1 flex-col gap-0.5 border-t border-border px-2.5 pb-2.5 pt-2">
+               <MenuAction
+-                label="Settings"
++                label={t("ui.account.settings")}
+                 icon={Settings}
+                 href="/company/settings"
+                 onClick={closeNavigationChrome}
+               />
+               <MenuAction
+-                label="View profile"
++                label={t("ui.account.viewProfile")}
+                 icon={UserRound}
+                 href={profileHref}
+                 onClick={closeNavigationChrome}
+               />
+               <MenuAction
+-                label="Edit profile"
++                label={t("ui.account.editProfile")}
+                 icon={UserRoundPen}
+                 href={PROFILE_SETTINGS_PATH}
+                 onClick={closeNavigationChrome}
+               />
+               <MenuAction
+-                label="Documentation"
++                label={t("ui.account.documentation")}
+                 icon={BookOpen}
+                 href={DOCS_URL}
+                 external
+                 onClick={() => setOpen(false)}
+               />
++              <LocaleSelector />
+               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
+               {deploymentMode === "authenticated" ? (
+                 <button
+@@ -224,7 +229,7 @@ export function SidebarAccountMenu({
+                     <LogOut className="size-4" />
+                   </span>
+                   <span className="min-w-0 flex-1 truncate">
+-                    {signOutMutation.isPending ? "Signing out..." : "Sign out"}
++                    {signOutMutation.isPending ? t("ui.account.signingOut") : t("ui.account.signOut")}
+                   </span>
+                 </button>
+               ) : null}
+@@ -239,13 +244,13 @@ export function SidebarAccountMenu({
+                 href={FEEDBACK_URL}
+                 target="_blank"
+                 rel="noreferrer"
+-                aria-label="Share feedback"
++                aria-label={t("ui.account.shareFeedback")}
+                 className="flex size-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground/50 transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+               >
+                 <Flag className="h-4 w-4" aria-hidden="true" />
+               </a>
+             </TooltipTrigger>
+-            <TooltipContent side="top">Share feedback</TooltipContent>
++            <TooltipContent side="top">{t("ui.account.shareFeedback")}</TooltipContent>
+           </Tooltip>
+         ) : null}
+       </div>
+diff --git a/ui/src/components/SidebarCompanyMenu.production.tsx b/ui/src/components/SidebarCompanyMenu.production.tsx
+index 81f3bbc..02da9ce 100644
+--- a/ui/src/components/SidebarCompanyMenu.production.tsx
++++ b/ui/src/components/SidebarCompanyMenu.production.tsx
+@@ -22,6 +22,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy }
+ import { CSS } from "@dnd-kit/utilities";
+ import { hidesCompanyPage, type Company } from "@paperclipai/shared";
+ import { Link, useLocation, useNavigate } from "@/lib/router";
++import { useTranslation } from "@/i18n";
+ import { authApi } from "@/api/auth";
+ import { Button } from "@/components/ui/button";
+ import {
+@@ -78,6 +79,7 @@ function SortableCompanyItem({
+   isSelected: boolean;
+   onSelect: (company: Company) => void;
+ }) {
++  const { t } = useTranslation();
+   const {
+     attributes,
+     listeners,
+@@ -124,7 +126,7 @@ function SortableCompanyItem({
+         <button
+           type="button"
+           ref={setActivatorNodeRef}
+-          aria-label={`Reorder ${company.name}`}
++          aria-label={t("ui.organization.reorder", { name: company.name })}
+           className="inline-flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
+           onClick={(event) => {
+             event.preventDefault();
+@@ -153,6 +155,7 @@ export function SidebarCompanyMenu(props: SidebarCompanyMenuProps = {}) {
+ }
+ 
+ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps) {
++  const { t } = useTranslation();
+   const [internalOpen, setInternalOpen] = useState(false);
+   const [isEditingOrder, setIsEditingOrder] = useState(false);
+   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+@@ -193,7 +196,6 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+     hiddenSettingsLoaded &&
+     !hidesCompanyPage(hiddenSettings, "company.members") &&
+     !hidesCompanyPage(hiddenSettings, "company.invites");
+-  const switcherNoun = "company";
+   const currentName = selectedCompany?.name ?? null;
+   // Managed hosts forbid local company creation. Their extension owns that action.
+   const companyCreationManaged = Boolean(useCloudInstance());
+@@ -268,8 +270,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+           className="h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-accent/50 hover:text-foreground has-[>svg]:px-4 dark:hover:bg-accent/50"
+           aria-label={
+             currentName
+-              ? `Open ${currentName} ${switcherNoun} switcher`
+-              : `Open ${switcherNoun} switcher`
++              ? t("ui.organization.openNamedSwitcher", { name: currentName })
++              : t("ui.organization.openSwitcher")
+           }
+         >
+           <span className="flex min-w-0 flex-1 items-center gap-2">
+@@ -285,7 +287,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+               )}
+               title={currentName ?? undefined}
+             >
+-              {currentName ?? `Select ${switcherNoun}`}
++              {currentName ?? t("ui.organization.select")}
+             </span>
+           </span>
+           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
+@@ -298,7 +300,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+       >
+         <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
+           <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
+-            Organizations
++            {t("ui.organization.listTitle")}
+           </DropdownMenuLabel>
+           <button
+             type="button"
+@@ -309,7 +311,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+             }}
+             className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+           >
+-            {isEditingOrder ? "Done" : "Edit"}
++            {isEditingOrder ? t("ui.organization.done") : t("ui.organization.edit")}
+           </button>
+         </div>
+         <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2 pt-1">
+@@ -340,7 +342,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+             // offer the way back.
+             companyListUnavailable ? (
+               <>
+-                <DropdownMenuItem disabled>Couldn&apos;t load companies</DropdownMenuItem>
++                <DropdownMenuItem disabled>{t("ui.organization.loadFailed")}</DropdownMenuItem>
+                 <DropdownMenuItem
+                   onSelect={(event) => {
+                     // Keep the menu open so the result of the retry is visible.
+@@ -349,11 +351,11 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                   }}
+                 >
+                   <RefreshCw className="h-4 w-4 mr-2" />
+-                  Try again
++                  {t("ui.organization.tryAgain")}
+                 </DropdownMenuItem>
+               </>
+             ) : (
+-              <DropdownMenuItem disabled>No companies</DropdownMenuItem>
++              <DropdownMenuItem disabled>{t("ui.organization.empty")}</DropdownMenuItem>
+             )
+           ) : null}
+         </div>
+@@ -367,7 +369,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                 <Plus className="size-4" />
+               </span>
+-              <span className="min-w-0 flex-1 truncate">Create organization</span>
++              <span className="min-w-0 flex-1 truncate">{t("ui.organization.create")}</span>
+             </DropdownMenuItem>
+           )}
+           {showInvitePeople ? (
+@@ -391,8 +393,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                 </span>
+                 <span className="min-w-0 flex-1 truncate">
+                   {currentName
+-                    ? `Invite people to ${currentName}`
+-                    : "Invite people"}
++                    ? t("ui.organization.inviteNamed", { name: currentName })
++                    : t("ui.organization.invite")}
+                 </span>
+               </Link>
+             </DropdownMenuItem>
+@@ -407,7 +409,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                 <LogOut className="size-4" />
+               </span>
+               <span className="min-w-0 flex-1 truncate">
+-                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
++                {signOutMutation.isPending ? t("ui.account.signingOut") : t("ui.account.signOut")}
+               </span>
+             </DropdownMenuItem>
+           ) : null}
+diff --git a/ui/src/components/SidebarCompanyMenu.tsx b/ui/src/components/SidebarCompanyMenu.tsx
+index 3a9e95f..7e9d64c 100644
+--- a/ui/src/components/SidebarCompanyMenu.tsx
++++ b/ui/src/components/SidebarCompanyMenu.tsx
+@@ -22,6 +22,7 @@ import { SortableContext, arrayMove, useSortable, verticalListSortingStrategy }
+ import { CSS } from "@dnd-kit/utilities";
+ import { hidesCompanyPage, type Company } from "@paperclipai/shared";
+ import { Link, useLocation, useNavigate } from "@/lib/router";
++import { useTranslation } from "@/i18n";
+ import { authApi } from "@/api/auth";
+ import { Button } from "@/components/ui/button";
+ import {
+@@ -78,6 +79,7 @@ function SortableCompanyItem({
+   isSelected: boolean;
+   onSelect: (company: Company) => void;
+ }) {
++  const { t } = useTranslation();
+   const {
+     attributes,
+     listeners,
+@@ -124,7 +126,7 @@ function SortableCompanyItem({
+         <button
+           type="button"
+           ref={setActivatorNodeRef}
+-          aria-label={`Reorder ${company.name}`}
++          aria-label={t("ui.organization.reorder", { name: company.name })}
+           className="inline-flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-(length:--rad-2) focus-visible:ring-ring"
+           onClick={(event) => {
+             event.preventDefault();
+@@ -153,6 +155,7 @@ export function SidebarCompanyMenu(props: SidebarCompanyMenuProps = {}) {
+ }
+ 
+ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompanyMenuProps) {
++  const { t } = useTranslation();
+   const [internalOpen, setInternalOpen] = useState(false);
+   const [isEditingOrder, setIsEditingOrder] = useState(false);
+   const { companies, selectedCompany, setSelectedCompanyId, companyListUnavailable, retryCompanies } =
+@@ -193,7 +196,6 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+     hiddenSettingsLoaded &&
+     !hidesCompanyPage(hiddenSettings, "company.members") &&
+     !hidesCompanyPage(hiddenSettings, "company.invites");
+-  const switcherNoun = "organization";
+   const currentName = selectedCompany?.name ?? null;
+   // Managed hosts forbid local company creation. Their extension owns that action.
+   const companyCreationManaged = Boolean(useCloudInstance());
+@@ -268,8 +270,8 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+           className="h-9 min-w-0 flex-1 justify-start gap-2 px-4 text-left hover:bg-sidebar-accent hover:text-sidebar-accent-foreground has-[>svg]:px-4 dark:hover:bg-sidebar-accent dark:hover:text-sidebar-accent-foreground"
+           aria-label={
+             currentName
+-              ? `Open ${currentName} ${switcherNoun} switcher`
+-              : `Open ${switcherNoun} switcher`
++              ? t("ui.organization.openNamedSwitcher", { name: currentName })
++              : t("ui.organization.openSwitcher")
+           }
+         >
+           <span className="flex min-w-0 flex-1 items-center gap-2">
+@@ -285,7 +287,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+               )}
+               title={currentName ?? undefined}
+             >
+-              {currentName ?? `Select ${switcherNoun}`}
++              {currentName ?? t("ui.organization.select")}
+             </span>
+           </span>
+           {!rail && <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" />}
+@@ -298,7 +300,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+       >
+         <div className="flex h-(--organization-popover-header-height) items-center justify-between gap-2 px-3.5">
+           <DropdownMenuLabel className="p-0 text-(length:--text-compact) font-semibold text-foreground">
+-            Organizations
++            {t("ui.organization.listTitle")}
+           </DropdownMenuLabel>
+           <button
+             type="button"
+@@ -309,7 +311,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+             }}
+             className="rounded px-1.5 py-0.5 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+           >
+-            {isEditingOrder ? "Done" : "Edit"}
++            {isEditingOrder ? t("ui.organization.done") : t("ui.organization.edit")}
+           </button>
+         </div>
+         <div className="flex max-h-96 flex-col gap-0.5 overflow-y-auto px-2.5 pb-2 pt-1">
+@@ -340,7 +342,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+             // offer the way back.
+             companyListUnavailable ? (
+               <>
+-                <DropdownMenuItem disabled>Couldn&apos;t load organizations</DropdownMenuItem>
++                <DropdownMenuItem disabled>{t("ui.organization.loadFailed")}</DropdownMenuItem>
+                 <DropdownMenuItem
+                   onSelect={(event) => {
+                     // Keep the menu open so the result of the retry is visible.
+@@ -349,11 +351,11 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                   }}
+                 >
+                   <RefreshCw className="h-4 w-4 mr-2" />
+-                  Try again
++                  {t("ui.organization.tryAgain")}
+                 </DropdownMenuItem>
+               </>
+             ) : (
+-              <DropdownMenuItem disabled>No organizations</DropdownMenuItem>
++              <DropdownMenuItem disabled>{t("ui.organization.empty")}</DropdownMenuItem>
+             )
+           ) : null}
+         </div>
+@@ -367,7 +369,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+               <span className="flex size-5 shrink-0 items-center justify-center text-muted-foreground">
+                 <Plus className="size-4" />
+               </span>
+-              <span className="min-w-0 flex-1 truncate">Create organization</span>
++              <span className="min-w-0 flex-1 truncate">{t("ui.organization.create")}</span>
+             </DropdownMenuItem>
+           )}
+           {showInvitePeople ? (
+@@ -386,7 +388,9 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                   <UserPlus className="size-4" />
+                 </span>
+                 <span className="min-w-0 flex-1 truncate">
+-                  {currentName ? `Invite people to ${currentName}` : "Invite people"}
++                  {currentName
++                    ? t("ui.organization.inviteNamed", { name: currentName })
++                    : t("ui.organization.invite")}
+                 </span>
+               </Link>
+             </DropdownMenuItem>
+@@ -401,7 +405,7 @@ function BuiltinCompanyMenu({ open: controlledOpen, onOpenChange }: SidebarCompa
+                 <LogOut className="size-4" />
+               </span>
+               <span className="min-w-0 flex-1 truncate">
+-                {signOutMutation.isPending ? "Signing out..." : "Sign out"}
++                {signOutMutation.isPending ? t("ui.account.signingOut") : t("ui.account.signOut")}
+               </span>
+             </DropdownMenuItem>
+           ) : null}
+diff --git a/ui/src/components/SidebarNavItem.production.tsx b/ui/src/components/SidebarNavItem.production.tsx
+index c703417..b2cf6a1 100644
+--- a/ui/src/components/SidebarNavItem.production.tsx
++++ b/ui/src/components/SidebarNavItem.production.tsx
+@@ -6,6 +6,8 @@ import { useSidebar } from "../context/SidebarContext";
+ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+ import type { LucideIcon } from "lucide-react";
+ import { Badge } from "@/components/ui/badge";
++import { useTranslation } from "@/i18n";
++import { sidebarItemTranslationKey } from "@/i18n/sidebar-labels";
+ 
+ /**
+  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
+@@ -89,6 +91,7 @@ export function SidebarNavItem({
+   trailingLabel,
+   liveAccessory,
+ }: SidebarNavItemProps) {
++  const { t } = useTranslation();
+   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+   // A fixed-width contextual pane (SecondarySidebar) forces full labels even
+   // when the global app sidebar is collapsed to its rail (PAP-10700).
+@@ -100,19 +103,27 @@ export function SidebarNavItem({
+ 
+   const hasBadge = badge != null && badge > 0;
+   const hasLive = liveCount != null && liveCount > 0;
++  const labelKey = sidebarItemTranslationKey(label);
++  const localizedLabel = labelKey ? t(labelKey, { defaultValue: label }) : label;
++  const localizedBadgeLabel = badgeLabel === "unread"
++    ? t("ui.sidebar.badge.unread")
++    : badgeLabel === "decisions"
++      ? t("ui.sidebar.badge.decisions")
++      : badgeLabel;
++  const localizedTextBadge = textBadge === "beta" ? t("ui.sidebar.badge.beta") : textBadge;
+ 
+   // Accessible text equivalent for the collapsed dot indicator. The visible
+   // label is `sr-only` in the rail, so the count must be surfaced here.
+   const railStatusText = hasLive
+-    ? `${liveCount} live`
++    ? t("ui.sidebar.badge.live", { count: liveCount })
+     : hasBadge
+-      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
++      ? `${badge}${localizedBadgeLabel ? ` ${localizedBadgeLabel}` : ""}`
+       : alert
+-        ? "attention needed"
++        ? t("ui.sidebar.badge.attentionNeeded")
+         : undefined;
+   const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
+     ? undefined
+-    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
++    : `${localizedLabel}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
+ 
+   const link = (
+     <NavLink
+@@ -162,9 +173,9 @@ export function SidebarNavItem({
+           />
+         )}
+       </span>
+-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
++      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{localizedLabel}</span>
+       {!rail && trailing}
+-      {!rail && textBadge && (
++      {!rail && localizedTextBadge && (
+         <Badge variant="ghost"
+           className={cn(
+             "ml-auto px-1.5 text-(length:--text-nano) leading-none",
+@@ -173,7 +184,7 @@ export function SidebarNavItem({
+               : "bg-muted text-muted-foreground",
+           )}
+         >
+-          {textBadge}
++          {localizedTextBadge}
+         </Badge>
+       )}
+       {!rail && (hasLive || liveAccessory) && (
+@@ -220,7 +231,7 @@ export function SidebarNavItem({
+       <TooltipTrigger asChild>
+         <div>{link}</div>
+       </TooltipTrigger>
+-      <TooltipContent side="right">{label}</TooltipContent>
++      <TooltipContent side="right">{localizedLabel}</TooltipContent>
+     </Tooltip>
+   );
+ }
+diff --git a/ui/src/components/SidebarNavItem.tsx b/ui/src/components/SidebarNavItem.tsx
+index efbcfa4..5108603 100644
+--- a/ui/src/components/SidebarNavItem.tsx
++++ b/ui/src/components/SidebarNavItem.tsx
+@@ -6,6 +6,8 @@ import { useSidebar } from "../context/SidebarContext";
+ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+ import type { LucideIcon } from "lucide-react";
+ import { Badge } from "@/components/ui/badge";
++import { useTranslation } from "@/i18n";
++import { sidebarItemTranslationKey } from "@/i18n/sidebar-labels";
+ 
+ /**
+  * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
+@@ -87,6 +89,7 @@ export function SidebarNavItem({
+   trailingLabel,
+   liveAccessory,
+ }: SidebarNavItemProps) {
++  const { t } = useTranslation();
+   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
+   // A contextual takeover forces full labels even when the saved global app
+   // sidebar preference is collapsed.
+@@ -99,19 +102,27 @@ export function SidebarNavItem({
+   const hasBadge = badge != null && badge > 0;
+   const hasLive = liveCount != null && liveCount > 0;
+   const showIconSlot = Boolean(iconNode || Icon || alert || (rail && (hasLive || hasBadge)));
++  const labelKey = sidebarItemTranslationKey(label);
++  const localizedLabel = labelKey ? t(labelKey, { defaultValue: label }) : label;
++  const localizedBadgeLabel = badgeLabel === "unread"
++    ? t("ui.sidebar.badge.unread")
++    : badgeLabel === "decisions"
++      ? t("ui.sidebar.badge.decisions")
++      : badgeLabel;
++  const localizedTextBadge = textBadge === "beta" ? t("ui.sidebar.badge.beta") : textBadge;
+ 
+   // Accessible text equivalent for the collapsed dot indicator. The visible
+   // label is `sr-only` in the rail, so the count must be surfaced here.
+   const railStatusText = hasLive
+-    ? `${liveCount} live`
++    ? t("ui.sidebar.badge.live", { count: liveCount })
+     : hasBadge
+-      ? `${badge}${badgeLabel ? ` ${badgeLabel}` : ""}`
++      ? `${badge}${localizedBadgeLabel ? ` ${localizedBadgeLabel}` : ""}`
+       : alert
+-        ? "attention needed"
++        ? t("ui.sidebar.badge.attentionNeeded")
+         : undefined;
+   const railAriaLabel = !rail || (!railStatusText && !trailingLabel)
+     ? undefined
+-    : `${label}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
++    : `${localizedLabel}${railStatusText ? `, ${railStatusText}` : ""}${trailingLabel ? `, ${trailingLabel}` : ""}`;
+ 
+   const link = (
+     <NavLink
+@@ -167,9 +178,9 @@ export function SidebarNavItem({
+           )}
+         </span>
+       ) : null}
+-      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{label}</span>
++      <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : cn("min-w-0 flex-1 truncate", labelClassName)}>{localizedLabel}</span>
+       {!rail && trailing}
+-      {!rail && textBadge && (
++      {!rail && localizedTextBadge && (
+         <Badge variant="ghost"
+           className={cn(
+             "ml-auto px-1.5 text-(length:--text-nano) leading-none",
+@@ -178,7 +189,7 @@ export function SidebarNavItem({
+               : "bg-muted text-muted-foreground",
+           )}
+         >
+-          {textBadge}
++          {localizedTextBadge}
+         </Badge>
+       )}
+       {!rail && (hasLive || liveAccessory) && (
+@@ -225,7 +236,7 @@ export function SidebarNavItem({
+       <TooltipTrigger asChild>
+         <div>{link}</div>
+       </TooltipTrigger>
+-      <TooltipContent side="right">{label}</TooltipContent>
++      <TooltipContent side="right">{localizedLabel}</TooltipContent>
+     </Tooltip>
+   );
+ }
+diff --git a/ui/src/components/SidebarSection.tsx b/ui/src/components/SidebarSection.tsx
+index 34c7f8d..af43281 100644
+--- a/ui/src/components/SidebarSection.tsx
++++ b/ui/src/components/SidebarSection.tsx
+@@ -19,6 +19,8 @@ import {
+ } from "@/components/ui/dropdown-menu";
+ import { cn } from "@/lib/utils";
+ import { useSidebarNavExpanded } from "./SidebarNavItem";
++import { useTranslation } from "@/i18n";
++import { sidebarSectionTranslationKey } from "@/i18n/sidebar-labels";
+ 
+ type SidebarSectionIcon = ComponentType<{ className?: string }>;
+ 
+@@ -69,6 +71,7 @@ function SidebarSectionHeader({
+   label,
+   menu,
+ }: Pick<SidebarSectionProps, "collapsible" | "headerAction" | "label" | "menu">) {
++  const { t } = useTranslation();
+   const { isMobile } = useSidebar();
+   const [menuOpen, setMenuOpen] = useState(false);
+   const hasMenu = Boolean(
+@@ -88,7 +91,9 @@ function SidebarSectionHeader({
+     "h-5 w-5 shrink-0 text-muted-foreground/60 transition-opacity hover:text-foreground data-[state=open]:opacity-100",
+     headerControlVisibilityClassName,
+   );
+-  const headerContent = <span className={labelClassName}>{label}</span>;
++  const sectionKey = sidebarSectionTranslationKey(label);
++  const localizedLabel = sectionKey ? t(sectionKey, { defaultValue: label }) : label;
++  const headerContent = <span className={labelClassName}>{localizedLabel}</span>;
+   const HeaderActionIcon = headerAction?.icon;
+ 
+   const headingControl = hasMenu ? (
+@@ -102,7 +107,7 @@ function SidebarSectionHeader({
+             "hover:bg-accent/50 focus-visible:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1",
+             menuOpen && "bg-accent/50",
+           )}
+-          aria-label={menu?.ariaLabel ?? `${label} actions`}
++          aria-label={menu?.ariaLabel ?? `${localizedLabel} ${t("ui.sidebar.actions")}`}
+         >
+           {headerContent}
+         </button>
+diff --git a/ui/src/components/ThemeToggle.tsx b/ui/src/components/ThemeToggle.tsx
+index 6da91a0..254cabb 100644
+--- a/ui/src/components/ThemeToggle.tsx
++++ b/ui/src/components/ThemeToggle.tsx
+@@ -3,6 +3,7 @@ import { Moon, Sun } from "lucide-react";
+ import { Button } from "@/components/ui/button";
+ import { cn } from "@/lib/utils";
+ import { useTheme } from "../context/ThemeContext";
++import { useTranslation } from "@/i18n";
+ 
+ type ThemeToggleVariant = "icon" | "menu-action" | "compact-menu-action";
+ 
+@@ -27,8 +28,6 @@ interface ThemeToggleProps {
+   onAfterToggle?: () => void;
+ }
+ 
+-const MENU_ACTION_DESCRIPTION = "Toggle the app appearance.";
+-
+ /**
+  * Canonical theme-toggle widget. Both the signed-out `/auth` chrome and
+  * the in-app account menu render through this component so the label,
+@@ -36,8 +35,9 @@ const MENU_ACTION_DESCRIPTION = "Toggle the app appearance.";
+  */
+ export function ThemeToggle({ className, variant = "icon", onAfterToggle }: ThemeToggleProps) {
+   const { theme, toggleTheme } = useTheme();
++  const { t } = useTranslation();
+   const isDark = theme === "dark";
+-  const label = isDark ? "Switch to light mode" : "Switch to dark mode";
++  const label = isDark ? t("ui.account.switchToLight") : t("ui.account.switchToDark");
+   const Icon = isDark ? Sun : Moon;
+ 
+   function handleClick() {
+@@ -80,7 +80,7 @@ export function ThemeToggle({ className, variant = "icon", onAfterToggle }: Them
+         </span>
+         <span className="min-w-0 flex-1">
+           <span className="block text-sm font-medium text-foreground">{label}</span>
+-          <span className="block text-xs text-muted-foreground">{MENU_ACTION_DESCRIPTION}</span>
++          <span className="block text-xs text-muted-foreground">{t("ui.account.toggleAppearance")}</span>
+         </span>
+       </button>
+     );
+diff --git a/ui/src/i18n/index.ts b/ui/src/i18n/index.ts
+index fb0bacd..54a881c 100644
+--- a/ui/src/i18n/index.ts
++++ b/ui/src/i18n/index.ts
+@@ -1,11 +1,14 @@
+ import i18n, { type InitOptions, type TOptions } from "i18next";
+ import { initReactI18next, useTranslation as useReactI18nextTranslation } from "react-i18next";
+ 
+-import { DEFAULT_LOCALE, i18nextResources, supportedLocales } from "./locales";
++import { DEFAULT_LOCALE, i18nextResources, SUPPORTED_UI_LOCALES, supportedLocales } from "./locales";
++import { browserLocaleStorage, loadLocalePreference, saveLocalePreference } from "./locale-preference";
++
++const browserLanguage = typeof window === "undefined" ? null : navigator.language;
+ 
+ const i18nextOptions: InitOptions = {
+   resources: i18nextResources,
+-  lng: DEFAULT_LOCALE,
++  lng: loadLocalePreference(browserLocaleStorage(), browserLanguage, SUPPORTED_UI_LOCALES, DEFAULT_LOCALE),
+   fallbackLng: DEFAULT_LOCALE,
+   supportedLngs: supportedLocales,
+   defaultNS: "translation",
+@@ -22,5 +25,12 @@ export function t(key: string, options: TOptions = {}) {
+   return i18n.t(key, options);
+ }
+ 
++export async function changeAppLocale(locale: string) {
++  if (!SUPPORTED_UI_LOCALES.some((supportedLocale) => supportedLocale === locale)) return false;
++  saveLocalePreference(locale, SUPPORTED_UI_LOCALES, browserLocaleStorage());
++  await i18n.changeLanguage(locale);
++  return true;
++}
++
+ export const useTranslation = useReactI18nextTranslation;
+ export { i18n };
+diff --git a/ui/src/i18n/locale-preference.test.ts b/ui/src/i18n/locale-preference.test.ts
+new file mode 100644
+index 0000000..9e3915b
+--- /dev/null
++++ b/ui/src/i18n/locale-preference.test.ts
+@@ -0,0 +1,80 @@
++import { describe, expect, it } from "vitest";
++import {
++  LOCALE_STORAGE_KEY,
++  loadLocalePreference,
++  resolveLocalePreference,
++  saveLocalePreference,
++  type LocaleStorage,
++} from "./locale-preference";
++
++const supportedLocales = ["en", "zh-CN", "de"] as const;
++
++function createStorage(initial: Record<string, string> = {}): LocaleStorage & { values: Map<string, string> } {
++  const values = new Map(Object.entries(initial));
++  return {
++    values,
++    getItem: (key) => values.get(key) ?? null,
++    setItem: (key, value) => values.set(key, value),
++  };
++}
++
++describe("locale preference", () => {
++  it("keeps a saved supported locale ahead of the browser language", () => {
++    expect(resolveLocalePreference({
++      storedLocale: "en",
++      browserLocale: "zh-CN",
++      supportedLocales,
++      fallbackLocale: "en",
++    })).toBe("en");
++  });
++
++  it("maps browser locale variants to the closest supported locale", () => {
++    expect(resolveLocalePreference({
++      storedLocale: null,
++      browserLocale: "zh-TW",
++      supportedLocales,
++      fallbackLocale: "en",
++    })).toBe("zh-CN");
++    expect(resolveLocalePreference({
++      storedLocale: null,
++      browserLocale: "de-AT",
++      supportedLocales,
++      fallbackLocale: "en",
++    })).toBe("de");
++  });
++
++  it("uses the fallback locale for unsupported preferences and browser languages", () => {
++    expect(resolveLocalePreference({
++      storedLocale: "xx",
++      browserLocale: "fr-FR",
++      supportedLocales,
++      fallbackLocale: "en",
++    })).toBe("en");
++  });
++
++  it("loads a saved locale and tolerates unavailable storage", () => {
++    const storage = createStorage({ [LOCALE_STORAGE_KEY]: "zh-CN" });
++    expect(loadLocalePreference(storage, "en-US", supportedLocales, "en")).toBe("zh-CN");
++
++    const brokenStorage: LocaleStorage = {
++      getItem: () => { throw new Error("storage unavailable"); },
++      setItem: () => { throw new Error("storage unavailable"); },
++    };
++    expect(loadLocalePreference(brokenStorage, "zh-HK", supportedLocales, "en")).toBe("zh-CN");
++    expect(loadLocalePreference(null, null, supportedLocales, "en")).toBe("en");
++  });
++
++  it("persists supported locales and ignores invalid or unavailable writes", () => {
++    const storage = createStorage();
++    expect(saveLocalePreference("zh-CN", supportedLocales, storage)).toBe(true);
++    expect(storage.values.get(LOCALE_STORAGE_KEY)).toBe("zh-CN");
++    expect(saveLocalePreference("xx", supportedLocales, storage)).toBe(false);
++    expect(saveLocalePreference("en", supportedLocales, null)).toBe(false);
++
++    const brokenStorage: LocaleStorage = {
++      getItem: () => null,
++      setItem: () => { throw new Error("storage unavailable"); },
++    };
++    expect(saveLocalePreference("en", supportedLocales, brokenStorage)).toBe(false);
++  });
++});
+diff --git a/ui/src/i18n/locale-preference.ts b/ui/src/i18n/locale-preference.ts
+new file mode 100644
+index 0000000..d6ef189
+--- /dev/null
++++ b/ui/src/i18n/locale-preference.ts
+@@ -0,0 +1,71 @@
++export const LOCALE_STORAGE_KEY = "paperclip.locale";
++
++export interface LocaleStorage {
++  getItem(key: string): string | null;
++  setItem(key: string, value: string): void;
++}
++
++interface LocalePreferenceOptions {
++  storedLocale: string | null;
++  browserLocale: string | null;
++  supportedLocales: readonly string[];
++  fallbackLocale: string;
++}
++
++export function resolveLocalePreference({
++  storedLocale,
++  browserLocale,
++  supportedLocales,
++  fallbackLocale,
++}: LocalePreferenceOptions) {
++  const stored = supportedLocales.find((locale) => locale.toLowerCase() === storedLocale?.toLowerCase());
++  if (stored) return stored;
++
++  const normalizedBrowserLocale = browserLocale?.replaceAll("_", "-").toLowerCase();
++  if (!normalizedBrowserLocale) return fallbackLocale;
++
++  const exact = supportedLocales.find((locale) => locale.toLowerCase() === normalizedBrowserLocale);
++  if (exact) return exact;
++
++  const language = normalizedBrowserLocale.split("-")[0];
++  return supportedLocales.find((locale) => locale.toLowerCase().split("-")[0] === language) ?? fallbackLocale;
++}
++
++export function loadLocalePreference(
++  storage: LocaleStorage | null,
++  browserLocale: string | null,
++  supportedLocales: readonly string[],
++  fallbackLocale: string,
++) {
++  let storedLocale: string | null = null;
++  try {
++    storedLocale = storage?.getItem(LOCALE_STORAGE_KEY) ?? null;
++  } catch {
++    // Storage can be disabled by the browser or privacy settings.
++  }
++
++  return resolveLocalePreference({ storedLocale, browserLocale, supportedLocales, fallbackLocale });
++}
++
++export function saveLocalePreference(
++  locale: string,
++  supportedLocales: readonly string[],
++  storage: LocaleStorage | null,
++) {
++  if (!storage || !supportedLocales.includes(locale)) return false;
++
++  try {
++    storage.setItem(LOCALE_STORAGE_KEY, locale);
++    return true;
++  } catch {
++    return false;
++  }
++}
++
++export function browserLocaleStorage(): LocaleStorage | null {
++  try {
++    return typeof window === "undefined" ? null : window.localStorage;
++  } catch {
++    return null;
++  }
++}
+diff --git a/ui/src/i18n/locale-validation.test.ts b/ui/src/i18n/locale-validation.test.ts
+index ab0e417..6b68406 100644
+--- a/ui/src/i18n/locale-validation.test.ts
++++ b/ui/src/i18n/locale-validation.test.ts
+@@ -1,8 +1,11 @@
+ import { describe, expect, it } from "vitest";
+-import { t } from ".";
++import { changeAppLocale, i18n, t } from ".";
+ import en from "./locales/en.json";
++import englishUiMessages from "./ui-messages/en.json";
++import simplifiedChineseUiMessages from "./ui-messages/zh-CN.json";
+ import { localeMessages } from "./locales";
+ import { validateLocaleMessages } from "./locale-validation";
++import { sidebarItemTranslationKey, sidebarSectionTranslationKey } from "./sidebar-labels";
+ 
+ describe("locale validation", () => {
+   it("resolves English messages with key and default fallbacks", () => {
+@@ -18,6 +21,35 @@ describe("locale validation", () => {
+     }
+   });
+ 
++  it("keeps the English and Simplified Chinese UI dictionaries contract-compatible", () => {
++    expect(validateLocaleMessages(simplifiedChineseUiMessages, englishUiMessages)).toEqual([]);
++  });
++
++  it("resolves the shared UI copy in English and Simplified Chinese", () => {
++    const english = i18n.getFixedT("en");
++    const simplifiedChinese = i18n.getFixedT("zh-CN");
++
++    expect(english("ui.sidebar.items.dashboard")).toBe("Dashboard");
++    expect(simplifiedChinese("ui.sidebar.items.dashboard")).toBe("仪表盘");
++    expect(simplifiedChinese("ui.sidebar.badge.live", { count: 3 })).toBe("3 项正在运行");
++    expect(simplifiedChinese("ui.organization.inviteNamed", { name: "Paperclip" })).toBe("邀请成员加入「Paperclip」");
++  });
++
++  it("changes the active UI locale and rejects unsupported choices", async () => {
++    expect(await changeAppLocale("zh-CN")).toBe(true);
++    expect(t("ui.sidebar.items.dashboard")).toBe("仪表盘");
++    expect(await changeAppLocale("xx")).toBe(false);
++    expect(i18n.language).toBe("zh-CN");
++    expect(await changeAppLocale("en")).toBe(true);
++    expect(t("ui.sidebar.items.dashboard")).toBe("Dashboard");
++  });
++
++  it("only translates known static navigation labels", () => {
++    expect(sidebarItemTranslationKey("Dashboard")).toBe("ui.sidebar.items.dashboard");
++    expect(sidebarSectionTranslationKey("Work")).toBe("ui.sidebar.sections.work");
++    expect(sidebarItemTranslationKey("Customer provided name")).toBeNull();
++  });
++
+   it("rejects missing and extra nested keys", () => {
+     expect(
+       validateLocaleMessages({
+diff --git a/ui/src/i18n/locales.ts b/ui/src/i18n/locales.ts
+index 188ee2b..22e8fcb 100644
+--- a/ui/src/i18n/locales.ts
++++ b/ui/src/i18n/locales.ts
+@@ -1,5 +1,7 @@
+ import type { Resource } from "i18next";
+ 
++import englishUiMessages from "./ui-messages/en.json";
++import simplifiedChineseUiMessages from "./ui-messages/zh-CN.json";
+ import { assertValidLocaleMessages } from "./locale-validation";
+ 
+ export const DEFAULT_LOCALE = "en" as const;
+@@ -34,8 +36,18 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
+ 
+ export const supportedLocales = Object.keys(localeMessages);
+ 
++export const SUPPORTED_UI_LOCALES = ["en", "zh-CN"] as const;
++
+ export const i18nextResources: Resource = Object.fromEntries(
+-  Object.entries(localeMessages).map(([locale, messages]) => [locale, { translation: messages }]),
++  Object.entries(localeMessages).map(([locale, messages]) => [
++    locale,
++    {
++      translation: {
++        ...(messages as Record<string, unknown>),
++        ui: locale === "zh-CN" ? simplifiedChineseUiMessages : englishUiMessages,
++      },
++    },
++  ]),
+ ) as Resource;
+ 
+ export type SupportedLocale = keyof typeof localeMessages;
+diff --git a/ui/src/i18n/sidebar-labels.ts b/ui/src/i18n/sidebar-labels.ts
+new file mode 100644
+index 0000000..fb9f1a5
+--- /dev/null
++++ b/ui/src/i18n/sidebar-labels.ts
+@@ -0,0 +1,52 @@
++const itemKeys: Record<string, string> = {
++  Search: "search",
++  Dashboard: "dashboard",
++  Inbox: "inbox",
++  Decisions: "decisions",
++  Status: "status",
++  "Conference Room": "conferenceRoom",
++  Tasks: "tasks",
++  Projects: "projects",
++  Routines: "routines",
++  Artifacts: "artifacts",
++  Cases: "cases",
++  Pipelines: "pipelines",
++  Goals: "goals",
++  Workspaces: "workspaces",
++  Agents: "agents",
++  Org: "org",
++  Skills: "skills",
++  Connectors: "connectors",
++  Audit: "audit",
++  Timeline: "timeline",
++  Costs: "costs",
++  Activity: "activity",
++  Settings: "settings",
++  Browse: "browse",
++  Connections: "connections",
++  General: "general",
++  Members: "members",
++  Invites: "invites",
++  Secrets: "secrets",
++  Export: "export",
++  Import: "import",
++  "Back to app": "backToApp",
++};
++
++const sectionKeys: Record<string, string> = {
++  Work: "work",
++  Company: "company",
++  Organization: "organization",
++  Org: "org",
++  "Recent Tasks": "recentTasks",
++};
++
++export function sidebarItemTranslationKey(label: string) {
++  const key = itemKeys[label];
++  return key ? `ui.sidebar.items.${key}` : null;
++}
++
++export function sidebarSectionTranslationKey(label: string) {
++  const key = sectionKeys[label];
++  return key ? `ui.sidebar.sections.${key}` : null;
++}
+diff --git a/ui/src/i18n/ui-messages/en.json b/ui/src/i18n/ui-messages/en.json
+new file mode 100644
+index 0000000..26cadff
+--- /dev/null
++++ b/ui/src/i18n/ui-messages/en.json
+@@ -0,0 +1,142 @@
++{
++  "sidebar": {
++    "sections": {
++      "work": "Work",
++      "company": "Company",
++      "organization": "Organization",
++      "org": "Org",
++      "recentTasks": "Recent Tasks"
++    },
++    "items": {
++      "search": "Search",
++      "dashboard": "Dashboard",
++      "inbox": "Inbox",
++      "decisions": "Decisions",
++      "status": "Status",
++      "conferenceRoom": "Conference Room",
++      "tasks": "Tasks",
++      "projects": "Projects",
++      "routines": "Routines",
++      "artifacts": "Artifacts",
++      "cases": "Cases",
++      "pipelines": "Pipelines",
++      "goals": "Goals",
++      "workspaces": "Workspaces",
++      "agents": "Agents",
++      "org": "Org",
++      "skills": "Skills",
++      "connectors": "Connectors",
++      "audit": "Audit",
++      "timeline": "Timeline",
++      "costs": "Costs",
++      "activity": "Activity",
++      "settings": "Settings",
++      "browse": "Browse",
++      "connections": "Connections",
++      "general": "General",
++      "members": "Members",
++      "invites": "Invites",
++      "secrets": "Secrets",
++      "export": "Export",
++      "import": "Import",
++      "backToApp": "Back to app"
++    },
++    "badge": {
++      "live": "{{count}} live",
++      "unread": "unread",
++      "decisions": "decisions",
++      "attentionNeeded": "attention needed",
++      "beta": "beta"
++    },
++    "actions": "actions"
++  },
++  "account": {
++    "openMenu": "Open account menu",
++    "settings": "Settings",
++    "viewProfile": "View profile",
++    "editProfile": "Edit profile",
++    "documentation": "Documentation",
++    "language": "Language",
++    "english": "English",
++    "simplifiedChinese": "Simplified Chinese",
++    "signOut": "Sign out",
++    "signingOut": "Signing out...",
++    "shareFeedback": "Share feedback",
++    "board": "Board",
++    "signedIn": "Signed in",
++    "localBoard": "Local workspace board",
++    "viewProfileDescription": "Open your activity, task, and usage ledger.",
++    "editProfileDescription": "Update your display name and avatar.",
++    "documentationDescription": "Open Paperclip docs in a new tab.",
++    "endSession": "End this browser session.",
++    "switchToLight": "Switch to light mode",
++    "switchToDark": "Switch to dark mode",
++    "toggleAppearance": "Toggle the app appearance."
++  },
++  "organization": {
++    "noun": "organization",
++    "select": "Select organization",
++    "openSwitcher": "Open organization switcher",
++    "openNamedSwitcher": "Open {{name}} organization switcher",
++    "reorder": "Reorder {{name}}",
++    "listTitle": "Organizations",
++    "edit": "Edit",
++    "done": "Done",
++    "loadFailed": "Couldn't load organizations",
++    "tryAgain": "Try again",
++    "empty": "No organizations",
++    "create": "Create organization",
++    "invite": "Invite people",
++    "inviteNamed": "Invite people to {{name}}"
++  },
++  "dashboard": {
++    "title": "Dashboard",
++    "emptyWelcome": "Welcome to Paperclip. Set up your first organization and agent to get started.",
++    "getStarted": "Get Started",
++    "selectOrganization": "Create or select an organization to view the dashboard.",
++    "importedPausedTitle": "{{count}} imported agents are paused and will not run.",
++    "resumeAll": "Resume all",
++    "resumePending": "Resuming...",
++    "importedPausedDescription": "Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start.",
++    "allPausedTitle": "All agents in this organization are paused — nothing will run.",
++    "reviewAgents": "Review agents",
++    "allPausedDescription": "Resume at least one agent to let assigned tasks start.",
++    "noAgents": "You have no agents.",
++    "createAgent": "Create one here",
++    "budgetIncident": "{{count}} active budget incidents",
++    "budgetSummary": "{{agents}} agents paused · {{projects}} projects paused · {{approvals}} pending budget approvals",
++    "openBudgets": "Open budgets",
++    "agentsEnabled": "Agents Enabled",
++    "running": "{{count}} running",
++    "paused": "{{count}} paused",
++    "errors": "{{count}} errors",
++    "tasksInProgress": "Tasks In Progress",
++    "openTasks": "{{count}} open",
++    "blockedTasks": "{{count}} blocked",
++    "monthSpend": "Month Spend",
++    "budgetPercent": "{{percent}}% of {{amount}} budget",
++    "unlimitedBudget": "Unlimited budget",
++    "pendingApprovals": "Pending Approvals",
++    "budgetOverrides": "{{count}} budget overrides awaiting board review",
++    "awaitingBoardReview": "Awaiting board review",
++    "runActivity": "Run Activity",
++    "last14Days": "Last 14 days",
++    "tasksByPriority": "Tasks by Priority",
++    "tasksByStatus": "Tasks by Status",
++    "successRate": "Success Rate",
++    "recentActivity": "Recent Activity",
++    "recentTasks": "Recent Tasks",
++    "noTasks": "No tasks yet."
++  },
++  "onboarding": {
++    "addAgentTitle": "Add another agent to {{name}}",
++    "createAnotherTitle": "Create another organization",
++    "createFirstTitle": "Create your first organization",
++    "addAgentDescription": "Run onboarding again to add an agent and a starter task for this organization.",
++    "createAnotherDescription": "Run onboarding again to create another organization and seed its first agent.",
++    "createFirstDescription": "Get started by creating an organization and your first agent.",
++    "addAgent": "Add Agent",
++    "start": "Start Onboarding",
++    "cloudUnavailable": "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio."
++  }
++}
+diff --git a/ui/src/i18n/ui-messages/zh-CN.json b/ui/src/i18n/ui-messages/zh-CN.json
+new file mode 100644
+index 0000000..db50843
+--- /dev/null
++++ b/ui/src/i18n/ui-messages/zh-CN.json
+@@ -0,0 +1,142 @@
++{
++  "sidebar": {
++    "sections": {
++      "work": "工作",
++      "company": "公司",
++      "organization": "组织",
++      "org": "组织架构",
++      "recentTasks": "最近任务"
++    },
++    "items": {
++      "search": "搜索",
++      "dashboard": "仪表盘",
++      "inbox": "收件箱",
++      "decisions": "决策",
++      "status": "状态",
++      "conferenceRoom": "会议室",
++      "tasks": "任务",
++      "projects": "项目",
++      "routines": "例行任务",
++      "artifacts": "成果",
++      "cases": "案例",
++      "pipelines": "流程",
++      "goals": "目标",
++      "workspaces": "工作区",
++      "agents": "智能体",
++      "org": "组织架构",
++      "skills": "技能",
++      "connectors": "连接器",
++      "audit": "审计",
++      "timeline": "时间线",
++      "costs": "费用",
++      "activity": "活动记录",
++      "settings": "设置",
++      "browse": "浏览",
++      "connections": "连接",
++      "general": "常规",
++      "members": "成员",
++      "invites": "邀请",
++      "secrets": "密钥",
++      "export": "导出",
++      "import": "导入",
++      "backToApp": "返回应用"
++    },
++    "badge": {
++      "live": "{{count}} 项正在运行",
++      "unread": "未读",
++      "decisions": "项待决策",
++      "attentionNeeded": "需要关注",
++      "beta": "测试版"
++    },
++    "actions": "操作"
++  },
++  "account": {
++    "openMenu": "打开账户菜单",
++    "settings": "设置",
++    "viewProfile": "查看个人资料",
++    "editProfile": "编辑个人资料",
++    "documentation": "使用文档",
++    "language": "界面语言",
++    "english": "English",
++    "simplifiedChinese": "简体中文",
++    "signOut": "退出登录",
++    "signingOut": "正在退出…",
++    "shareFeedback": "提交反馈",
++    "board": "控制台",
++    "signedIn": "已登录",
++    "localBoard": "本地工作区控制台",
++    "viewProfileDescription": "查看您的活动、任务与用量记录。",
++    "editProfileDescription": "修改显示名称和头像。",
++    "documentationDescription": "在新标签页打开 Paperclip 文档。",
++    "endSession": "结束当前浏览器会话。",
++    "switchToLight": "切换到浅色模式",
++    "switchToDark": "切换到深色模式",
++    "toggleAppearance": "切换应用的明暗外观。"
++  },
++  "organization": {
++    "noun": "组织",
++    "select": "选择组织",
++    "openSwitcher": "打开组织切换菜单",
++    "openNamedSwitcher": "打开「{{name}}」组织切换菜单",
++    "reorder": "调整「{{name}}」的顺序",
++    "listTitle": "组织",
++    "edit": "编辑",
++    "done": "完成",
++    "loadFailed": "无法加载组织",
++    "tryAgain": "重试",
++    "empty": "暂无组织",
++    "create": "创建组织",
++    "invite": "邀请成员",
++    "inviteNamed": "邀请成员加入「{{name}}」"
++  },
++  "dashboard": {
++    "title": "仪表盘",
++    "emptyWelcome": "欢迎使用 Paperclip。创建第一个组织和智能体即可开始。",
++    "getStarted": "开始设置",
++    "selectOrganization": "创建或选择一个组织以查看仪表盘。",
++    "importedPausedTitle": "导入的 {{count}} 个智能体已暂停，当前不会运行。",
++    "resumeAll": "全部恢复",
++    "resumePending": "正在恢复…",
++    "importedPausedDescription": "从组织导入的智能体默认处于暂停状态。恢复后，它们才能开始处理已分配的任务。",
++    "allPausedTitle": "此组织中的智能体均已暂停，没有任务会运行。",
++    "reviewAgents": "查看智能体",
++    "allPausedDescription": "至少恢复一个智能体，已分配的任务才能开始执行。",
++    "noAgents": "此组织还没有智能体。",
++    "createAgent": "在此创建",
++    "budgetIncident": "有 {{count}} 项预算事件正在处理",
++    "budgetSummary": "{{agents}} 个智能体已暂停 · {{projects}} 个项目已暂停 · {{approvals}} 项预算待审批",
++    "openBudgets": "查看预算",
++    "agentsEnabled": "已启用智能体",
++    "running": "{{count}} 个运行中",
++    "paused": "{{count}} 个已暂停",
++    "errors": "{{count}} 项错误",
++    "tasksInProgress": "进行中的任务",
++    "openTasks": "{{count}} 项未开始",
++    "blockedTasks": "{{count}} 项受阻",
++    "monthSpend": "本月支出",
++    "budgetPercent": "已用预算 {{percent}}%（总额 {{amount}}）",
++    "unlimitedBudget": "预算不限额",
++    "pendingApprovals": "待审批",
++    "budgetOverrides": "{{count}} 项预算调整等待控制台审核",
++    "awaitingBoardReview": "等待控制台审核",
++    "runActivity": "运行活动",
++    "last14Days": "最近 14 天",
++    "tasksByPriority": "按优先级查看任务",
++    "tasksByStatus": "按状态查看任务",
++    "successRate": "成功率",
++    "recentActivity": "最近活动",
++    "recentTasks": "最近任务",
++    "noTasks": "还没有任务。"
++  },
++  "onboarding": {
++    "addAgentTitle": "为「{{name}}」添加智能体",
++    "createAnotherTitle": "创建另一个组织",
++    "createFirstTitle": "创建您的第一个组织",
++    "addAgentDescription": "重新运行引导流程，为此组织添加智能体和初始任务。",
++    "createAnotherDescription": "重新运行引导流程，创建另一个组织并配置首个智能体。",
++    "createFirstDescription": "创建组织和首个智能体，开始使用 Paperclip。",
++    "addAgent": "添加智能体",
++    "start": "开始引导设置",
++    "cloudUnavailable": "组织需在 Paperclip Cloud 中创建。此实例暂时无法连接，请前往 Cloud 控制台重试。"
++  }
++}
+diff --git a/ui/src/pages/Dashboard.tsx b/ui/src/pages/Dashboard.tsx
+index 756727f..b10503a 100644
+--- a/ui/src/pages/Dashboard.tsx
++++ b/ui/src/pages/Dashboard.tsx
+@@ -37,6 +37,7 @@ import { Button } from "@/components/ui/button";
+ import { InlineBanner } from "../components/InlineBanner";
+ import type { Agent, Issue } from "@paperclipai/shared";
+ import { PluginSlotOutlet } from "@/plugins/slots";
++import { useTranslation } from "@/i18n";
+ import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
+ 
+ const DASHBOARD_ACTIVITY_LIMIT = 10;
+@@ -71,6 +72,7 @@ export function derivePausedAgentBanner(agents: Agent[] | undefined): PausedAgen
+ }
+ 
+ export function Dashboard() {
++  const { t } = useTranslation();
+   const { selectedCompanyId, companies } = useCompany();
+   const { openOnboarding } = useDialogActions();
+   const location = useLocation();
+@@ -155,8 +157,8 @@ export function Dashboard() {
+   }, [shouldOpenOnboarding, selectedCompanyId, openOnboarding]);
+ 
+   useEffect(() => {
+-    setBreadcrumbs([{ label: "Dashboard" }]);
+-  }, [setBreadcrumbs]);
++    setBreadcrumbs([{ label: t("ui.dashboard.title") }]);
++  }, [setBreadcrumbs, t]);
+ 
+   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
+   const sharedDashboard = useSharedPollingQuery({
+@@ -297,14 +299,14 @@ export function Dashboard() {
+       return (
+         <EmptyState
+           icon={LayoutDashboard}
+-          message="Welcome to Paperclip. Set up your first organization and agent to get started."
+-          action="Get Started"
++          message={t("ui.dashboard.emptyWelcome")}
++          action={t("ui.dashboard.getStarted")}
+           onAction={openOnboarding}
+         />
+       );
+     }
+     return (
+-      <EmptyState icon={LayoutDashboard} message="Create or select an organization to view the dashboard." />
++      <EmptyState icon={LayoutDashboard} message={t("ui.dashboard.selectOrganization")} />
+     );
+   }
+ 
+@@ -328,7 +330,7 @@ export function Dashboard() {
+         <InlineBanner
+           tone="warning"
+           icon={PauseCircle}
+-          title={`${pausedImportedCount} imported agent${pausedImportedCount === 1 ? " is" : "s are"} paused and will not run.`}
++          title={t("ui.dashboard.importedPausedTitle", { count: pausedImportedCount })}
+           actions={
+             <Button
+               size="sm"
+@@ -336,24 +338,24 @@ export function Dashboard() {
+               disabled={resumeImportedAgents.isPending}
+               data-testid="dashboard-resume-imported-agents"
+             >
+-              {resumeImportedAgents.isPending ? "Resuming…" : "Resume all"}
++              {resumeImportedAgents.isPending ? t("ui.dashboard.resumePending") : t("ui.dashboard.resumeAll")}
+             </Button>
+           }
+         >
+-          Agents from an organization import arrive paused as a safety default. Resume them so assigned tasks can start.
++          {t("ui.dashboard.importedPausedDescription")}
+         </InlineBanner>
+       ) : pausedBanner?.kind === "all-paused" ? (
+         <InlineBanner
+           tone="warning"
+           icon={PauseCircle}
+-          title="All agents in this organization are paused — nothing will run."
++          title={t("ui.dashboard.allPausedTitle")}
+           actions={
+             <Button variant="ghost" size="sm" asChild>
+-              <Link to="/agents">Review agents</Link>
++              <Link to="/agents">{t("ui.dashboard.reviewAgents")}</Link>
+             </Button>
+           }
+         >
+-          Resume at least one agent to let assigned tasks start.
++          {t("ui.dashboard.allPausedDescription")}
+         </InlineBanner>
+       ) : null}
+ 
+@@ -362,14 +364,14 @@ export function Dashboard() {
+           <div className="flex items-center gap-2.5">
+             <Bot className="h-4 w-4 text-amber-600 dark:text-amber-400 shrink-0" />
+             <p className="text-sm text-amber-900 dark:text-amber-100">
+-              You have no agents.
++              {t("ui.dashboard.noAgents")}
+             </p>
+           </div>
+           <button
+             onClick={() => openOnboarding({ initialStep: 3, companyId: selectedCompanyId! })}
+             className="text-sm font-medium text-amber-700 hover:text-amber-900 dark:text-amber-300 dark:hover:text-amber-100 underline underline-offset-2 shrink-0"
+           >
+-            Create one here
++            {t("ui.dashboard.createAgent")}
+           </button>
+         </div>
+       )}
+@@ -384,15 +386,19 @@ export function Dashboard() {
+                 <PauseCircle className="mt-0.5 h-4 w-4 shrink-0 text-red-700 dark:text-red-300" />
+                 <div>
+                   <p className="text-sm font-medium text-red-950 dark:text-red-50">
+-                    {data.budgets.activeIncidents} active budget incident{data.budgets.activeIncidents === 1 ? "" : "s"}
++                    {t("ui.dashboard.budgetIncident", { count: data.budgets.activeIncidents })}
+                   </p>
+                   <p className="text-xs text-red-900/70 dark:text-red-100/70">
+-                    {data.budgets.pausedAgents} agents paused · {data.budgets.pausedProjects} projects paused · {data.budgets.pendingApprovals} pending budget approvals
++                    {t("ui.dashboard.budgetSummary", {
++                      agents: data.budgets.pausedAgents,
++                      projects: data.budgets.pausedProjects,
++                      approvals: data.budgets.pendingApprovals,
++                    })}
+                   </p>
+                 </div>
+               </div>
+               <Link to="/costs" className="text-sm underline underline-offset-2 text-red-900 dark:text-red-100">
+-                Open budgets
++                {t("ui.dashboard.openBudgets")}
+               </Link>
+             </div>
+           ) : null}
+@@ -401,51 +407,54 @@ export function Dashboard() {
+             <MetricCard
+               icon={Bot}
+               value={data.agents.active + data.agents.running + data.agents.paused + data.agents.error}
+-              label="Agents Enabled"
++              label={t("ui.dashboard.agentsEnabled")}
+               to="/agents"
+               description={
+                 <span>
+-                  {data.agents.running} running{", "}
+-                  {data.agents.paused} paused{", "}
+-                  {data.agents.error} errors
++                  {t("ui.dashboard.running", { count: data.agents.running })}{", "}
++                  {t("ui.dashboard.paused", { count: data.agents.paused })}{", "}
++                  {t("ui.dashboard.errors", { count: data.agents.error })}
+                 </span>
+               }
+             />
+             <MetricCard
+               icon={CircleDot}
+               value={data.tasks.inProgress}
+-              label="Tasks In Progress"
++              label={t("ui.dashboard.tasksInProgress")}
+               to="/issues"
+               description={
+                 <span>
+-                  {data.tasks.open} open{", "}
+-                  {data.tasks.blocked} blocked
++                  {t("ui.dashboard.openTasks", { count: data.tasks.open })}{", "}
++                  {t("ui.dashboard.blockedTasks", { count: data.tasks.blocked })}
+                 </span>
+               }
+             />
+             <MetricCard
+               icon={DollarSign}
+               value={formatCents(data.costs.monthSpendCents)}
+-              label="Month Spend"
++              label={t("ui.dashboard.monthSpend")}
+               to="/costs"
+               description={
+                 <span>
+                   {data.costs.monthBudgetCents > 0
+-                    ? `${data.costs.monthUtilizationPercent}% of ${formatCents(data.costs.monthBudgetCents)} budget`
+-                    : "Unlimited budget"}
++                    ? t("ui.dashboard.budgetPercent", {
++                      percent: data.costs.monthUtilizationPercent,
++                      amount: formatCents(data.costs.monthBudgetCents),
++                    })
++                    : t("ui.dashboard.unlimitedBudget")}
+                 </span>
+               }
+             />
+             <MetricCard
+               icon={ShieldCheck}
+               value={data.pendingApprovals + data.budgets.pendingApprovals}
+-              label="Pending Approvals"
++              label={t("ui.dashboard.pendingApprovals")}
+               to="/approvals"
+               description={
+                 <span>
+                   {data.budgets.pendingApprovals > 0
+-                    ? `${data.budgets.pendingApprovals} budget overrides awaiting board review`
+-                    : "Awaiting board review"}
++                    ? t("ui.dashboard.budgetOverrides", { count: data.budgets.pendingApprovals })
++                    : t("ui.dashboard.awaitingBoardReview")}
+                 </span>
+               }
+             />
+@@ -454,19 +463,19 @@ export function Dashboard() {
+           <SmokeLabDashboardCard companyId={selectedCompanyId!} />
+ 
+           <div className={cn("grid grid-cols-2 gap-4", SHOW_TASK_PRIORITY_UI ? "lg:grid-cols-4" : "lg:grid-cols-3")}>
+-            <ChartCard title="Run Activity" subtitle="Last 14 days">
++            <ChartCard title={t("ui.dashboard.runActivity")} subtitle={t("ui.dashboard.last14Days")}>
+               <RunActivityChart activity={data.runActivity} />
+             </ChartCard>
+             {/* PAP-411: "Tasks by Priority" chart hidden behind SHOW_TASK_PRIORITY_UI. */}
+             {SHOW_TASK_PRIORITY_UI && (
+-              <ChartCard title="Tasks by Priority" subtitle="Last 14 days">
++              <ChartCard title={t("ui.dashboard.tasksByPriority")} subtitle={t("ui.dashboard.last14Days")}>
+                 <PriorityChart issues={issues ?? []} />
+               </ChartCard>
+             )}
+-            <ChartCard title="Tasks by Status" subtitle="Last 14 days">
++            <ChartCard title={t("ui.dashboard.tasksByStatus")} subtitle={t("ui.dashboard.last14Days")}>
+               <IssueStatusChart issues={issues ?? []} />
+             </ChartCard>
+-            <ChartCard title="Success Rate" subtitle="Last 14 days">
++            <ChartCard title={t("ui.dashboard.successRate")} subtitle={t("ui.dashboard.last14Days")}>
+               <SuccessRateChart activity={data.runActivity} />
+             </ChartCard>
+           </div>
+@@ -484,7 +493,7 @@ export function Dashboard() {
+             {recentActivity.length > 0 && (
+               <div className="min-w-0">
+                 <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+-                  Recent Activity
++                  {t("ui.dashboard.recentActivity")}
+                 </h3>
+                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">
+                   {recentActivity.map((event) => (
+@@ -505,11 +514,11 @@ export function Dashboard() {
+             {/* Recent Tasks */}
+             <div className="min-w-0">
+               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wide mb-3">
+-                Recent Tasks
++                {t("ui.dashboard.recentTasks")}
+               </h3>
+               {recentIssues.length === 0 ? (
+                 <Card className="block p-4">
+-                  <p className="text-sm text-muted-foreground">No tasks yet.</p>
++                  <p className="text-sm text-muted-foreground">{t("ui.dashboard.noTasks")}</p>
+                 </Card>
+               ) : (
+                 <Card className="@container block py-0 divide-y divide-border overflow-hidden">

@@ -1,0 +1,46 @@
+Paperclip 简体中文补丁验证记录
+================================
+
+上游基线：0f14d261233c545aa6a8a38ec253c498a5130fff
+本地验证提交：42c8882e7d374cdacf8603c1449a455a035846f1
+变更分支/字段：UI locale resources、浏览器语言偏好与账户菜单语言选择；侧边栏、组织切换器、主题切换、Dashboard 和引导页文案。
+补丁文件：paperclip-zh-cn.patch
+
+BASELINE
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/i18n/locale-validation.test.ts
+输入：未应用补丁的干净上游基线。
+结果：Test Files 1 passed (1); Tests 7 passed (7); exit status 0。
+
+MODIFIED
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/i18n/locale-preference.test.ts src/i18n/locale-validation.test.ts
+输入：通过 paperclip-zh-cn.patch 应用到干净基线的源码。
+结果：Test Files 2 passed (2); Tests 16 passed (16); exit status 0。
+
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vite/bin/vite.js build
+输入：汉化后的 UI 源码。
+结果：✓ built in 43.63s; exit status 0。构建产生上游 CSS ::highlight 解析和 chunk 大小警告，不影响构建完成。
+
+命令（工作目录：Paperclip/ui）：
+  node node_modules/typescript/bin/tsc -b
+输入：汉化后的 UI 源码及当前已链接的工作区依赖。
+结果：exit status 1。报告既有工作区依赖/类型问题：缺少 three 类型；缺少 @paperclipai/plugin-sdk/ui 声明，并由此产生参数隐式 any。相同问题在未应用补丁的基线也存在；没有将类型检查记为通过。
+
+ROLLBACK
+命令：
+  "D:\tool\Git\bin\bash.exe" "D:/work station/codex/paperclip-zh-cn/ROLLBACK.sh" "D:/work station/codex/paperclip-validation-replay"
+输入：已应用完整补丁的独立上游基线副本。
+结果：脚本输出“Paperclip 简体中文补丁已回滚：D:/work station/codex/paperclip-validation-replay”；exit status 0。git status --short --branch 输出“## HEAD (no branch)”，工作树与索引均干净。回滚后基线 i18n 测试 1 个文件、7 项通过，exit status 0。
+
+补丁本身另在一个独立干净副本执行了 git apply --check 和 git apply，随后运行上述 MODIFIED i18n 测试，16 项通过；再次反向应用后确认无差异。
+
+启动修复状态
+============
+快捷命令：pc（普通权限 PowerShell 中调用 paperclipai run）。
+验证：127.0.0.1:3100/api/health 返回 HTTP 200，status=ok，版本 2026.916.1。已有服务保持运行。
+
+安装包完整性
+============
+原始 paperclip-upstream.zip SHA-256：95E74B8E4005C89BB6518648156AD9A969003D3DC371FBB912D52A9E538BF5C5（保持未修改）。
