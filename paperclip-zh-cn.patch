@@ -55,6 +55,873 @@ index c1ba938..8358919 100644
              </p>
            ) : (
              <Button
+diff --git a/ui/src/api/auth.test.ts b/ui/src/api/auth.test.ts
+index 0b2a760..9466fc8 100644
+--- a/ui/src/api/auth.test.ts
++++ b/ui/src/api/auth.test.ts
+@@ -8,6 +8,7 @@ import { authApi } from "./auth";
+ afterEach(() => {
+   vi.restoreAllMocks();
+   vi.unstubAllGlobals();
++  globalThis.localStorage.clear();
+ });
+ 
+ describe("authApi.getSession", () => {
+@@ -70,3 +71,55 @@ describe("authApi.signOut", () => {
+     });
+   });
+ });
++
++describe("authApi user preferences compatibility", () => {
++  it("uses a browser-local preference when the server does not expose the preferences route", async () => {
++    const fetchMock = vi.fn().mockResolvedValue(
++      new Response(JSON.stringify({ error: "API route not found" }), {
++        status: 404,
++        headers: { "Content-Type": "application/json" },
++      }),
++    );
++    vi.stubGlobal("fetch", fetchMock);
++
++    await expect(authApi.getPreferences("local-board")).resolves.toEqual({
++      keyboardShortcuts: false,
++      localOnly: true,
++    });
++    expect(fetchMock).toHaveBeenCalledWith(
++      "/api/auth/preferences?expectedUserId=local-board",
++      expect.any(Object),
++    );
++  });
++
++  it("persists and reads browser-local shortcuts when the server route is missing", async () => {
++    const fetchMock = vi.fn()
++      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "API route not found" }), { status: 404 }))
++      .mockResolvedValueOnce(new Response(JSON.stringify({ error: "API route not found" }), { status: 404 }));
++    vi.stubGlobal("fetch", fetchMock);
++
++    await expect(authApi.updatePreferences({
++      companyId: "company-1",
++      keyboardShortcuts: true,
++      expectedUserId: "local-board",
++    })).resolves.toEqual({ keyboardShortcuts: true, localOnly: true });
++    await expect(authApi.getPreferences("local-board")).resolves.toEqual({
++      keyboardShortcuts: true,
++      localOnly: true,
++    });
++  });
++
++  it("does not hide unrelated preference endpoint errors", async () => {
++    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
++      new Response(JSON.stringify({ error: "Profile not found" }), {
++        status: 404,
++        headers: { "Content-Type": "application/json" },
++      }),
++    ));
++
++    await expect(authApi.getPreferences("local-board")).rejects.toMatchObject({
++      status: 404,
++      message: "Profile not found",
++    });
++  });
++});
+diff --git a/ui/src/api/auth.ts b/ui/src/api/auth.ts
+index 0923f37..742d95f 100644
+--- a/ui/src/api/auth.ts
++++ b/ui/src/api/auth.ts
+@@ -24,6 +24,32 @@ export interface SignOutResult {
+   redirectTo?: string;
+ }
+ 
++export type ResolvedCurrentUserPreferences = CurrentUserPreferences & { localOnly?: true };
++
++const localPreferencesKey = (userId: string) => `paperclip.user-preferences.${encodeURIComponent(userId)}`;
++
++function readLocalPreferences(userId: string): ResolvedCurrentUserPreferences {
++  try {
++    const stored = globalThis.localStorage.getItem(localPreferencesKey(userId));
++    const parsed: unknown = stored ? JSON.parse(stored) : null;
++    if (parsed && typeof parsed === "object" && typeof (parsed as Record<string, unknown>).keyboardShortcuts === "boolean") {
++      return { keyboardShortcuts: (parsed as { keyboardShortcuts: boolean }).keyboardShortcuts, localOnly: true };
++    }
++  } catch {
++    // Use the documented default when storage is disabled or malformed.
++  }
++  return { keyboardShortcuts: false, localOnly: true };
++}
++
++function writeLocalPreferences(userId: string, preferences: CurrentUserPreferences): ResolvedCurrentUserPreferences {
++  globalThis.localStorage.setItem(localPreferencesKey(userId), JSON.stringify(preferences));
++  return { ...preferences, localOnly: true };
++}
++
++function isMissingPreferencesRoute(error: unknown): error is AuthApiError {
++  return error instanceof AuthApiError && error.status === 404 && error.message === "API route not found";
++}
++
+ export class AuthApiError extends Error {
+   status: number;
+   code: string | null;
+@@ -180,7 +206,7 @@ export const authApi = {
+     await authPost("/sign-up/email", input);
+   },
+ 
+-  getPreferences: async (expectedUserId: string): Promise<CurrentUserPreferences> => {
++  getPreferences: async (expectedUserId: string): Promise<ResolvedCurrentUserPreferences> => {
+     const res = await fetch(`/api/auth/preferences?expectedUserId=${encodeURIComponent(expectedUserId)}`, {
+       credentials: "include",
+       headers: { Accept: "application/json" },
+@@ -189,13 +215,23 @@ export const authApi = {
+     if (!res.ok) {
+       const recovery = tenantSessionRecovery.recoverIfNeeded(res.status, payload);
+       if (recovery) return recovery;
+-      throw extractAuthError(payload as AuthErrorBody, res.status);
++      const error = extractAuthError(payload as AuthErrorBody, res.status);
++      if (isMissingPreferencesRoute(error)) return readLocalPreferences(expectedUserId);
++      throw error;
+     }
+     return currentUserPreferencesSchema.parse(payload);
+   },
+ 
+-  updatePreferences: (input: UpdateCurrentUserPreferences): Promise<CurrentUserPreferences> =>
+-    authPatch("/preferences", input, (payload) => currentUserPreferencesSchema.parse(payload)),
++  updatePreferences: async (input: UpdateCurrentUserPreferences): Promise<ResolvedCurrentUserPreferences> => {
++    try {
++      return await authPatch("/preferences", input, (payload) => currentUserPreferencesSchema.parse(payload));
++    } catch (error) {
++      if (isMissingPreferencesRoute(error)) {
++        return writeLocalPreferences(input.expectedUserId, { keyboardShortcuts: input.keyboardShortcuts });
++      }
++      throw error;
++    }
++  },
+ 
+   getProfile: async (): Promise<CurrentUserProfile> => {
+     const res = await fetch("/api/auth/profile", {
+diff --git a/ui/src/components/BreadcrumbBar.production.tsx b/ui/src/components/BreadcrumbBar.production.tsx
+index 4563df0..1414e76 100644
+--- a/ui/src/components/BreadcrumbBar.production.tsx
++++ b/ui/src/components/BreadcrumbBar.production.tsx
+@@ -15,6 +15,8 @@ import {
+ import { Fragment, useMemo } from "react";
+ import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
++import { useTranslation } from "@/i18n";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
+ 
+ type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
+ 
+@@ -40,9 +42,14 @@ function GlobalToolbar({ context }: { context: GlobalToolbarContext }) {
+ }
+ 
+ export function BreadcrumbBar() {
++  const { t } = useTranslation();
+   const { breadcrumbs, mobileToolbar } = useBreadcrumbs();
+   const { toggleSidebar, isMobile } = useSidebar();
+   const { selectedCompanyId, selectedCompany } = useCompany();
++  const crumbLabel = (label: string) => {
++    const key = settingsTranslationKey(label);
++    return key ? t(key) : label;
++  };
+ 
+   const globalToolbarSlotContext = useMemo(
+     () => ({
+@@ -76,7 +83,7 @@ export function BreadcrumbBar() {
+       size="icon-sm"
+       className="mr-2 shrink-0"
+       onClick={toggleSidebar}
+-      aria-label="Open sidebar"
++      aria-label="打开侧边栏"
+     >
+       <Menu className="h-5 w-5" />
+     </Button>
+@@ -94,11 +101,11 @@ export function BreadcrumbBar() {
+                 <span className="flex shrink-0 items-center">{breadcrumbs[0].leading}</span>
+               )}
+               <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
+-              <span className="truncate">{breadcrumbs[0].label}</span>
++              <span className="truncate">{crumbLabel(breadcrumbs[0].label)}</span>
+             </h1>
+           ) : (
+             <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+-              {breadcrumbs[0].label}
++              {crumbLabel(breadcrumbs[0].label)}
+             </h1>
+           )}
+         </div>
+@@ -127,10 +134,10 @@ export function BreadcrumbBar() {
+                             <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                           )}
+                           <CrumbIdentifier identifier={crumb.identifier} />
+-                          <span className="truncate">{crumb.label}</span>
++                          <span className="truncate">{crumbLabel(crumb.label)}</span>
+                         </BreadcrumbPage>
+                       ) : (
+-                        <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
++                        <BreadcrumbPage className="truncate">{crumbLabel(crumb.label)}</BreadcrumbPage>
+                       )
+                     ) : (
+                       <BreadcrumbLink asChild>
+@@ -140,10 +147,10 @@ export function BreadcrumbBar() {
+                               <span className="flex shrink-0 items-center">{crumb.leading}</span>
+                             )}
+                             <CrumbIdentifier identifier={crumb.identifier} />
+-                            <span className="truncate">{crumb.label}</span>
++                            <span className="truncate">{crumbLabel(crumb.label)}</span>
+                           </Link>
+                         ) : (
+-                          <Link to={crumb.href} onClick={crumb.onClick}>{crumb.label}</Link>
++                          <Link to={crumb.href} onClick={crumb.onClick}>{crumbLabel(crumb.label)}</Link>
+                         )}
+                       </BreadcrumbLink>
+                     )}
+diff --git a/ui/src/components/BreadcrumbBar.tsx b/ui/src/components/BreadcrumbBar.tsx
+index e679583..cbf0f4a 100644
+--- a/ui/src/components/BreadcrumbBar.tsx
++++ b/ui/src/components/BreadcrumbBar.tsx
+@@ -17,6 +17,8 @@ import { Fragment, useMemo, type ReactNode } from "react";
+ import { PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
+ import { PluginLauncherOutlet, usePluginLaunchers } from "@/plugins/launchers";
+ import { cn } from "../lib/utils";
++import { useTranslation } from "@/i18n";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
+ 
+ type GlobalToolbarContext = { companyId: string | null; companyPrefix: string | null };
+ 
+@@ -53,6 +55,7 @@ function GlobalToolbar({
+ }
+ 
+ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?: boolean }) {
++  const { t } = useTranslation();
+   const {
+     breadcrumbs,
+     breadcrumbToolbar,
+@@ -102,13 +105,17 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+       size="icon-sm"
+       className="mr-2 shrink-0"
+       onClick={toggleSidebar}
+-      aria-label="Open sidebar"
++      aria-label="打开侧边栏"
+     >
+       <Menu className="h-5 w-5" />
+     </Button>
+   );
+ 
+   const currentCrumb = breadcrumbs[breadcrumbs.length - 1];
++  const crumbLabel = (label: string) => {
++    const key = settingsTranslationKey(label);
++    return key ? t(key) : label;
++  };
+   if (isMobile && breadcrumbs[0]?.label === "Tasks" && currentCrumb.identifier) {
+     return (
+       <div className="h-(--sz-60px) shrink-0 flex items-center border-b border-border px-4">
+@@ -117,7 +124,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+           {currentCrumb.leading ? (
+             <span className="flex shrink-0 items-center self-center">{currentCrumb.leading}</span>
+           ) : null}
+-          <span className="min-w-0 truncate" title={currentCrumb.label}>{currentCrumb.label}</span>
++          <span className="min-w-0 truncate" title={crumbLabel(currentCrumb.label)}>{crumbLabel(currentCrumb.label)}</span>
+           <CrumbIdentifier identifier={currentCrumb.identifier} />
+         </h1>
+         {globalToolbarSlots}
+@@ -142,11 +149,11 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+                           <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
+                         )}
+                         {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+-                        <span className="min-w-0 truncate">{crumb.label}</span>
++                        <span className="min-w-0 truncate">{crumbLabel(crumb.label)}</span>
+                         {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                       </BreadcrumbPage>
+                     ) : (
+-                      <BreadcrumbPage className="truncate">{crumb.label}</BreadcrumbPage>
++                      <BreadcrumbPage className="truncate">{crumbLabel(crumb.label)}</BreadcrumbPage>
+                     )
+                   ) : (
+                     <BreadcrumbLink asChild>
+@@ -162,7 +169,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+                             <span className="flex shrink-0 items-center self-center">{crumb.leading}</span>
+                           )}
+                           {!taskDetailLayout ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+-                          <span className="min-w-0 truncate">{crumb.label}</span>
++                          <span className="min-w-0 truncate">{crumbLabel(crumb.label)}</span>
+                           {taskDetailLayout && isLast ? <CrumbIdentifier identifier={crumb.identifier} /> : null}
+                         </Link>
+                       ) : (
+@@ -173,7 +180,7 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+                             i === 0 && "font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground",
+                           )}
+                         >
+-                          {crumb.label}
++                          {crumbLabel(crumb.label)}
+                         </Link>
+                       )}
+                     </BreadcrumbLink>
+@@ -201,11 +208,11 @@ export function BreadcrumbBar({ taskDetailLayout = false }: { taskDetailLayout?:
+                 <span className="flex shrink-0 items-center self-center">{breadcrumbs[0].leading}</span>
+               )}
+               <CrumbIdentifier identifier={breadcrumbs[0].identifier} />
+-              <span className="truncate">{breadcrumbs[0].label}</span>
++              <span className="truncate">{crumbLabel(breadcrumbs[0].label)}</span>
+             </h1>
+           ) : (
+             <h1 className="text-sm font-semibold uppercase tracking-wider truncate">
+-              {breadcrumbs[0].label}
++              {crumbLabel(breadcrumbs[0].label)}
+             </h1>
+           )}
+         </div>
+diff --git a/ui/src/components/CommandPalette.tsx b/ui/src/components/CommandPalette.tsx
+index 25f3d2a..1bdf8e7 100644
+--- a/ui/src/components/CommandPalette.tsx
++++ b/ui/src/components/CommandPalette.tsx
+@@ -36,6 +36,7 @@ import {
+ } from "lucide-react";
+ import { Identity } from "./Identity";
+ import { agentUrl, projectUrl } from "../lib/utils";
++import { useTranslation } from "@/i18n";
+ import {
+   SEARCH_OPERATOR_QUICK_FILTERS,
+   buildSearchPathFromQuery,
+@@ -89,6 +90,7 @@ function scoreProjectMatch(name: string, description: string, q: string): number
+ }
+ 
+ export function CommandPalette() {
++  const { t } = useTranslation();
+   const [open, setOpen] = useState(false);
+   const [query, setQuery] = useState("");
+   const navigate = useNavigate();
+@@ -218,12 +220,12 @@ export function CommandPalette() {
+     showSearchAll && visibleIssues.length === 0 && matchedProjects.length === 0;
+ 
+   return (
+-    <CommandDialog open={open} onOpenChange={(v) => {
++    <CommandDialog title={t("ui.commandPalette.title")} description={t("ui.commandPalette.description")} open={open} onOpenChange={(v) => {
+         setOpen(v);
+         if (v && isMobile) setSidebarOpen(false);
+       }}>
+       <CommandInput
+-        placeholder="Search tasks, agents, projects..."
++        placeholder={t("ui.commandPalette.placeholder")}
+         value={query}
+         onValueChange={setQuery}
+         onKeyDown={(event) => {
+@@ -242,17 +244,17 @@ export function CommandPalette() {
+         <CommandEmpty>
+           {showSearchAll ? (
+             <span>
+-              No quick task matches. Press{" "}
++              {t("ui.commandPalette.noQuickMatches")} {" "}
+               <kbd className="rounded border border-border bg-muted px-1 py-0.5 text-(length:--text-nano)">↵</kbd>{" "}
+-              to <span className="font-medium">search all</span> or keep typing to refine.
++              {t("ui.commandPalette.searchAllOrRefine")}
+             </span>
+           ) : (
+-            "No results found."
++            t("ui.commandPalette.noResults")
+           )}
+         </CommandEmpty>
+ 
+         {showSearchAll ? (
+-          <CommandGroup heading="Search">
++          <CommandGroup heading={t("ui.commandPalette.search") }>
+             <CommandItem
+               value={`${SEARCH_ALL_VALUE} ${searchQuery}`}
+               onSelect={goFullSearch}
+@@ -261,10 +263,10 @@ export function CommandPalette() {
+             >
+               <Search className="mr-2 h-4 w-4" />
+               <span className="flex-1 truncate">
+-                Search all for <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
++                {t("ui.commandPalette.searchAllFor")} <span className="font-semibold">&ldquo;{searchQuery}&rdquo;</span>
+               </span>
+               <span className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground">
+-                <span>open full search</span>
++                <span>{t("ui.commandPalette.openFullSearch")}</span>
+                 <kbd className="rounded border border-border bg-background px-1 py-0.5 text-(length:--text-nano)">↵</kbd>
+               </span>
+             </CommandItem>
+@@ -273,7 +275,7 @@ export function CommandPalette() {
+ 
+         {showSearchAll ? <CommandSeparator /> : null}
+ 
+-        <CommandGroup heading="Quick filters">
++        <CommandGroup heading={t("ui.commandPalette.quickFilters")}>
+           {SEARCH_OPERATOR_QUICK_FILTERS.map((chip) => (
+             <CommandItem
+               key={chip}
+@@ -291,7 +293,7 @@ export function CommandPalette() {
+ 
+         {showPromotedProjects && (
+           <>
+-            <CommandGroup heading="Projects">
++            <CommandGroup heading={t("ui.commandPalette.projects")}>
+               {matchedProjects.map((project) => (
+                 <CommandItem
+                   key={project.id}
+@@ -313,7 +315,7 @@ export function CommandPalette() {
+           </>
+         )}
+ 
+-        <CommandGroup heading="Actions">
++        <CommandGroup heading={t("ui.commandPalette.actions")}>
+           <CommandItem
+             onSelect={() => {
+               setOpen(false);
+@@ -321,7 +323,7 @@ export function CommandPalette() {
+             }}
+           >
+             <SquarePen className="mr-2 h-4 w-4" />
+-            Create new task
++            {t("ui.commandPalette.createTask")}
+             <span className="ml-auto text-xs text-muted-foreground">C</span>
+           </CommandItem>
+           {onIssueDetail && fileViewerEnabled && (
+@@ -332,7 +334,7 @@ export function CommandPalette() {
+               }}
+             >
+               <FileCode2 className="mr-2 h-4 w-4" />
+-              Open file in this issue...
++              {t("ui.commandPalette.openFile")}
+               <span className="ml-auto text-xs text-muted-foreground">g f</span>
+             </CommandItem>
+           )}
+@@ -343,55 +345,55 @@ export function CommandPalette() {
+             }}
+           >
+             <Plus className="mr-2 h-4 w-4" />
+-            Create new agent
++            {t("ui.commandPalette.createAgent")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/projects")}>
+             <Plus className="mr-2 h-4 w-4" />
+-            Create new project
++            {t("ui.commandPalette.createProject")}
+           </CommandItem>
+         </CommandGroup>
+ 
+         <CommandSeparator />
+ 
+-        <CommandGroup heading="Pages">
++        <CommandGroup heading={t("ui.commandPalette.pages")}>
+           <CommandItem onSelect={() => go("/dashboard")}>
+             <LayoutDashboard className="mr-2 h-4 w-4" />
+-            Dashboard
++            {t("ui.commandPalette.dashboard")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/inbox")}>
+             <Inbox className="mr-2 h-4 w-4" />
+-            Inbox
++            {t("ui.commandPalette.inbox")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/issues")}>
+             <CircleDot className="mr-2 h-4 w-4" />
+-            Tasks
++            {t("ui.commandPalette.tasks")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/projects")}>
+             <Hexagon className="mr-2 h-4 w-4" />
+-            Projects
++            {t("ui.commandPalette.projects")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/goals")}>
+             <Target className="mr-2 h-4 w-4" />
+-            Goals
++            {t("ui.commandPalette.goals")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/agents")}>
+             <Bot className="mr-2 h-4 w-4" />
+-            Agents
++            {t("ui.commandPalette.agents")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/costs")}>
+             <DollarSign className="mr-2 h-4 w-4" />
+-            Costs
++            {t("ui.commandPalette.costs")}
+           </CommandItem>
+           <CommandItem onSelect={() => go("/activity")}>
+             <History className="mr-2 h-4 w-4" />
+-            Activity
++            {t("ui.commandPalette.activity")}
+           </CommandItem>
+         </CommandGroup>
+ 
+         {visibleIssues.length > 0 && (
+           <>
+             <CommandSeparator />
+-            <CommandGroup heading="Tasks">
++            <CommandGroup heading={t("ui.commandPalette.tasks")}>
+               {visibleIssues.slice(0, taskLimit).map((issue) => (
+                 <CommandItem
+                   key={issue.id}
+@@ -420,7 +422,7 @@ export function CommandPalette() {
+         {agents.length > 0 && (
+           <>
+             <CommandSeparator />
+-            <CommandGroup heading="Agents">
++            <CommandGroup heading={t("ui.commandPalette.agents")}>
+               {agents.slice(0, 10).map((agent) => (
+                 <CommandItem key={agent.id} onSelect={() => go(agentUrl(agent))}>
+                   <Bot className="mr-2 h-4 w-4" />
+@@ -435,7 +437,7 @@ export function CommandPalette() {
+         {projects.length > 0 && !showSearchAll && (
+           <>
+             <CommandSeparator />
+-            <CommandGroup heading="Projects">
++            <CommandGroup heading={t("ui.commandPalette.projects")}>
+               {projects.slice(0, 10).map((project) => (
+                 <CommandItem key={project.id} onSelect={() => go(projectUrl(project))}>
+                   <Hexagon className="mr-2 h-4 w-4" />
+diff --git a/ui/src/components/CompanySettingsSidebar.production.tsx b/ui/src/components/CompanySettingsSidebar.production.tsx
+index 4080d1a..ab3a32b 100644
+--- a/ui/src/components/CompanySettingsSidebar.production.tsx
++++ b/ui/src/components/CompanySettingsSidebar.production.tsx
+@@ -29,6 +29,7 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
+ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+ import { usePluginSlots } from "@/plugins/slots";
+ import { SidebarNavItem } from "./SidebarNavItem.production";
++import { useTranslation } from "@/i18n";
+ 
+ /**
+  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
+@@ -43,6 +44,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
+ }
+ 
+ export function CompanySettingsSidebar() {
++  const { t } = useTranslation();
+   const { selectedCompany, selectedCompanyId } = useCompany();
+   const { isMobile, setSidebarOpen } = useSidebar();
+   const { hidden: hiddenSettings } = useHiddenSettings();
+@@ -98,7 +100,7 @@ export function CompanySettingsSidebar() {
+         </Link>
+       </div>
+ 
+-      <nav className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
++      <nav aria-label={t("ui.settings.tabs.settings")} className="flex-1 min-h-0 overflow-y-auto scrollbar-auto-hide px-3 py-2">
+         <div className="flex flex-col gap-0.5">
+           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
+           {showPage("instance.profile") && (
+diff --git a/ui/src/components/CompanySettingsSidebar.test.tsx b/ui/src/components/CompanySettingsSidebar.test.tsx
+index 7a3418d..c45684b 100644
+--- a/ui/src/components/CompanySettingsSidebar.test.tsx
++++ b/ui/src/components/CompanySettingsSidebar.test.tsx
+@@ -161,7 +161,7 @@ describe("CompanySettingsSidebar", () => {
+       primarySidebarStyles.group,
+     );
+     expect(container.textContent).toContain("Back to app");
+-    expect(container.querySelector('nav[aria-label="Settings"]')?.textContent).not.toContain(
++    expect(container.querySelector('nav[aria-label="设置"]')?.textContent).not.toContain(
+       "Back to app",
+     );
+     expect(container.textContent).not.toContain("Company Settings");
+diff --git a/ui/src/components/CompanySettingsSidebar.tsx b/ui/src/components/CompanySettingsSidebar.tsx
+index 81dad30..078d99b 100644
+--- a/ui/src/components/CompanySettingsSidebar.tsx
++++ b/ui/src/components/CompanySettingsSidebar.tsx
+@@ -28,6 +28,7 @@ import { usePluginSlots } from "@/plugins/slots";
+ import { SidebarNavItem } from "./SidebarNavItem";
+ import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
+ import { primarySidebarStyles } from "./primary-sidebar-styles";
++import { useTranslation } from "@/i18n";
+ 
+ /**
+  * Sandbox-provider-only plugins (e.g. E2B, exe.dev, Modal) have no per-plugin
+@@ -42,6 +43,7 @@ function isSandboxProviderOnly(plugin: PluginRecord): boolean {
+ }
+ 
+ export function CompanySettingsSidebar() {
++  const { t } = useTranslation();
+   const { selectedCompanyId } = useCompany();
+   const { hidden: hiddenSettings } = useHiddenSettings();
+   const showPage = (pageKey: string) => !hiddenSettings.has(pageKey);
+@@ -97,7 +99,7 @@ export function CompanySettingsSidebar() {
+         </div>
+       </div>
+       <nav
+-        aria-label="Settings"
++        aria-label={t("ui.settings.tabs.settings")}
+         data-slot="contextual-sidebar-nav"
+         className={primarySidebarStyles.nav}
+       >
+diff --git a/ui/src/components/InboxAgentPolicyControl.test.tsx b/ui/src/components/InboxAgentPolicyControl.test.tsx
+index d14f3ba..54a8313 100644
+--- a/ui/src/components/InboxAgentPolicyControl.test.tsx
++++ b/ui/src/components/InboxAgentPolicyControl.test.tsx
+@@ -117,11 +117,11 @@ describe("InboxAgentPolicyControl", () => {
+     await flush();
+ 
+     await waitForAssertion(() => {
+-      expect(optionByTitle(container, "Any of my agents")).toBeTruthy();
+-      expect(optionByTitle(container, "Only chosen agents")).toBeTruthy();
+-      expect(optionByTitle(container, "Off")).toBeTruthy();
+-      expect(optionByTitle(container, "Off")?.getAttribute("aria-checked")).toBe("true");
+-      expect(optionByTitle(container, "Any of my agents")?.getAttribute("aria-checked")).toBe("false");
++      expect(optionByTitle(container, "允许我的所有智能体")).toBeTruthy();
++      expect(optionByTitle(container, "仅允许指定智能体")).toBeTruthy();
++      expect(optionByTitle(container, "关闭")).toBeTruthy();
++      expect(optionByTitle(container, "关闭")?.getAttribute("aria-checked")).toBe("true");
++      expect(optionByTitle(container, "允许我的所有智能体")?.getAttribute("aria-checked")).toBe("false");
+     });
+ 
+     act(() => root.unmount());
+@@ -133,23 +133,23 @@ describe("InboxAgentPolicyControl", () => {
+ 
+     // Save disabled until the draft diverges from the persisted policy.
+     await waitForAssertion(() => {
+-      const save = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save"));
++      const save = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("保存"));
+       expect(save?.disabled).toBe(true);
+     });
+ 
+     // Switch to allowlist — agents stay in the compact selector instead of a
+     // permanently expanded list.
+-    await act(async () => optionByTitle(container, "Only chosen agents")!.click());
++    await act(async () => optionByTitle(container, "仅允许指定智能体")!.click());
+     await flush();
+     await waitForAssertion(() => {
+-      expect(container.textContent).toContain("Select agents");
++      expect(container.textContent).toContain("选择智能体");
+       expect(container.textContent).not.toContain("Gardener");
+       expect(container.textContent).not.toContain("Coder");
+       expect(container.textContent).not.toContain("Retired");
+     });
+ 
+     const selector = Array.from(container.querySelectorAll("button"))
+-      .find((button) => button.textContent?.includes("Select agents"));
++      .find((button) => button.textContent?.includes("选择智能体"));
+     await act(async () => selector!.click());
+     await flush();
+     await waitForAssertion(() => {
+@@ -165,7 +165,7 @@ describe("InboxAgentPolicyControl", () => {
+     await act(async () => gardenerCheckbox!.click());
+     await flush();
+ 
+-    const saveButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save"))!;
++    const saveButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("保存"))!;
+     await waitForAssertion(() => expect(saveButton.disabled).toBe(false));
+ 
+     await act(async () => saveButton.click());
+@@ -177,8 +177,8 @@ describe("InboxAgentPolicyControl", () => {
+     });
+ 
+     await waitForAssertion(() => {
+-      expect(container.textContent).toContain("Saved");
+-      const save = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save"));
++      expect(container.textContent).toContain("已保存");
++      const save = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("保存"));
+       expect(save?.disabled).toBe(true);
+     });
+ 
+@@ -191,13 +191,13 @@ describe("InboxAgentPolicyControl", () => {
+     await flush();
+ 
+     await waitForAssertion(() => {
+-      expect(optionByTitle(container, "Only chosen agents")?.getAttribute("aria-checked")).toBe("true");
++      expect(optionByTitle(container, "仅允许指定智能体")?.getAttribute("aria-checked")).toBe("true");
+     });
+ 
+-    await act(async () => optionByTitle(container, "Off")!.click());
++    await act(async () => optionByTitle(container, "关闭")!.click());
+     await flush();
+ 
+-    const saveButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("Save"))!;
++    const saveButton = Array.from(container.querySelectorAll("button")).find((b) => b.textContent?.includes("保存"))!;
+     await waitForAssertion(() => expect(saveButton.disabled).toBe(false));
+     await act(async () => saveButton.click());
+     await flush();
+diff --git a/ui/src/components/InboxAgentPolicyControl.tsx b/ui/src/components/InboxAgentPolicyControl.tsx
+index 56aff2b..c58a0a8 100644
+--- a/ui/src/components/InboxAgentPolicyControl.tsx
++++ b/ui/src/components/InboxAgentPolicyControl.tsx
+@@ -9,24 +9,7 @@ import { isAgentTaskTarget } from "@/lib/company-members";
+ import { AgentMultiSelect } from "@/components/AgentMultiSelect";
+ import { Button } from "@/components/ui/button";
+ import { RadioCardGroup, type RadioCardOption } from "@/components/ui/radio-card";
+-
+-const MODE_OPTIONS: RadioCardOption[] = [
+-  {
+-    value: "open",
+-    title: "Any of my agents",
+-    description: "Let any agent you manage archive tasks out of your inbox.",
+-  },
+-  {
+-    value: "allowlist",
+-    title: "Only chosen agents",
+-    description: "Restrict inbox tidying to the agents you pick below.",
+-  },
+-  {
+-    value: "disabled",
+-    title: "Off",
+-    description: "Agents can never archive tasks from your inbox.",
+-  },
+-];
++import { useTranslation } from "@/i18n";
+ 
+ function policyKey(mode: InboxAgentPolicyMode, allowedAgentIds: string[]): string {
+   return `${mode}:${[...allowedAgentIds].sort().join(",")}`;
+@@ -45,6 +28,7 @@ interface Draft {
+  * "Archived by …" attribution live elsewhere (inbox rows / properties pane).
+  */
+ export function InboxAgentPolicyControl({ companyId }: { companyId: string | null | undefined }) {
++  const { t } = useTranslation();
+   const queryClient = useQueryClient();
+   const [draft, setDraft] = useState<Draft | null>(null);
+   const lastServerKeyRef = useRef<string | null>(null);
+@@ -78,6 +62,23 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
+     () => new Set(draft?.allowedAgentIds ?? []),
+     [draft?.allowedAgentIds],
+   );
++  const modeOptions: RadioCardOption[] = [
++    {
++      value: "open",
++      title: t("ui.inboxPolicy.anyAgentTitle"),
++      description: t("ui.inboxPolicy.anyAgentDescription"),
++    },
++    {
++      value: "allowlist",
++      title: t("ui.inboxPolicy.chosenAgentsTitle"),
++      description: t("ui.inboxPolicy.chosenAgentsDescription"),
++    },
++    {
++      value: "disabled",
++      title: t("ui.inboxPolicy.offTitle"),
++      description: t("ui.inboxPolicy.offDescription"),
++    },
++  ];
+ 
+   // Adopt server state on first load, or on refetch when the user has not
+   // diverged from the previously-synced snapshot (so a background refetch never
+@@ -112,39 +113,38 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
+   if (policyQuery.error) {
+     return (
+       <div className="text-sm text-destructive">
+-        {policyQuery.error instanceof Error ? policyQuery.error.message : "Failed to load inbox agent policy."}
++        {policyQuery.error instanceof Error ? policyQuery.error.message : t("ui.inboxPolicy.loadFailed")}
+       </div>
+     );
+   }
+ 
+   if (policyQuery.isLoading || !draft) {
+-    return <div className="text-sm text-muted-foreground">Loading inbox agent policy…</div>;
++    return <div className="text-sm text-muted-foreground">{t("ui.inboxPolicy.loading")}</div>;
+   }
+ 
+   return (
+-    <section className="space-y-4" aria-label="Let agents tidy my inbox">
++    <section className="space-y-4" aria-label={t("ui.inboxPolicy.title")}>
+       <div className="space-y-1">
+         <div className="flex items-center gap-2">
+           <Inbox className="h-5 w-5 text-muted-foreground" />
+-          <h2 className="text-base font-semibold">Let agents tidy my inbox</h2>
++          <h2 className="text-base font-semibold">{t("ui.inboxPolicy.title")}</h2>
+         </div>
+         <p className="max-w-2xl text-sm text-muted-foreground">
+-          Choose whether the agents you manage may archive tasks out of your inbox on your behalf. You can
+-          undo any archive, and every agent archive is attributed in the task&apos;s properties.
++          {t("ui.inboxPolicy.description")}
+         </p>
+       </div>
+ 
+       <RadioCardGroup
+-        ariaLabel="Inbox agent archiving policy"
++        ariaLabel={t("ui.inboxPolicy.ariaLabel")}
+         value={draft.mode}
+         onValueChange={(value) => setDraft((current) => (current ? { ...current, mode: value as InboxAgentPolicyMode } : current))}
+-        options={MODE_OPTIONS}
++        options={modeOptions}
+         className="max-w-2xl"
+       />
+ 
+       {draft.mode === "allowlist" ? (
+         <div className="max-w-2xl space-y-2">
+-          <div className="text-sm font-medium">Agents allowed to tidy my inbox</div>
++          <div className="text-sm font-medium">{t("ui.inboxPolicy.allowedAgents")}</div>
+           <AgentMultiSelect
+             agents={agentOptions}
+             selectedAgentIds={selectedAgentIds}
+@@ -155,25 +155,27 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
+             }
+             triggerLabel={
+               selectedAgentIds.size === 0
+-                ? "Select agents"
+-                : `${selectedAgentIds.size} ${selectedAgentIds.size === 1 ? "agent" : "agents"} selected`
++                ? t("ui.inboxPolicy.selectAgents")
++                : t(selectedAgentIds.size === 1 ? "ui.inboxPolicy.oneAgentSelected" : "ui.inboxPolicy.agentsSelected", {
++                    count: selectedAgentIds.size,
++                  })
+             }
+             triggerFullWidth={false}
+             showSelectionPreview={false}
+-            emptyMessage="You don’t manage any agents yet."
++            emptyMessage={t("ui.inboxPolicy.noManagedAgents")}
+           />
+         </div>
+       ) : null}
+ 
+       {updateMutation.error ? (
+         <div className="max-w-2xl rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+-          {updateMutation.error instanceof Error ? updateMutation.error.message : "Failed to save inbox agent policy."}
++          {updateMutation.error instanceof Error ? updateMutation.error.message : t("ui.inboxPolicy.saveFailed")}
+         </div>
+       ) : null}
+ 
+       <div className="flex max-w-2xl items-center justify-end gap-3">
+         {updateMutation.isSuccess && !isDirty ? (
+-          <span className="text-xs text-muted-foreground" role="status">Saved</span>
++          <span className="text-xs text-muted-foreground" role="status">{t("ui.inboxPolicy.saved")}</span>
+         ) : null}
+         <Button
+           type="button"
+@@ -181,7 +183,7 @@ export function InboxAgentPolicyControl({ companyId }: { companyId: string | nul
+           onClick={() => draft && updateMutation.mutate(draft)}
+         >
+           {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+-          {updateMutation.isPending ? "Saving…" : "Save"}
++          {updateMutation.isPending ? t("ui.inboxPolicy.saving") : t("ui.inboxPolicy.save")}
+         </Button>
+       </div>
+     </section>
+diff --git a/ui/src/components/Layout.production.tsx b/ui/src/components/Layout.production.tsx
+index 6f88bbe..450a851 100644
+--- a/ui/src/components/Layout.production.tsx
++++ b/ui/src/components/Layout.production.tsx
+@@ -650,7 +650,7 @@ export function Layout() {
+           href="#main-content"
+           className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+         >
+-          Skip to Main Content
++          跳转到主要内容
+         </a>
+         <WorktreeBanner />
+         <DevRestartBanner devServer={health?.devServer} />
+@@ -665,7 +665,7 @@ export function Layout() {
+               type="button"
+               className="fixed inset-0 z-40 bg-black/50"
+               onClick={() => setSidebarOpen(false)}
+-              aria-label="Close sidebar"
++            aria-label="关闭侧边栏"
+             />
+           )}
+ 
+diff --git a/ui/src/components/Layout.tsx b/ui/src/components/Layout.tsx
+index 79437ea..1691163 100644
+--- a/ui/src/components/Layout.tsx
++++ b/ui/src/components/Layout.tsx
+@@ -630,7 +630,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+         href="#main-content"
+         className="sr-only focus:not-sr-only focus:fixed focus:left-3 focus:top-3 focus:z-(--z-200) focus:rounded-md focus:bg-background focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:shadow-lg focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+       >
+-        Skip to Main Content
++        跳转到主要内容
+       </a>
+       <WorktreeBanner />
+       <DevRestartBanner devServer={health?.devServer} />
+@@ -640,7 +640,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
+             type="button"
+             className="fixed inset-0 z-40 bg-black/50"
+             onClick={() => setSidebarOpen(false)}
+-            aria-label="Close sidebar"
++            aria-label="关闭侧边栏"
+           />
+         )}
+ 
 diff --git a/ui/src/components/LocaleSelector.tsx b/ui/src/components/LocaleSelector.tsx
 new file mode 100644
 index 0000000..9d55528
@@ -585,19 +1452,20 @@ index 3a9e95f..7e9d64c 100644
              </DropdownMenuItem>
            ) : null}
 diff --git a/ui/src/components/SidebarNavItem.production.tsx b/ui/src/components/SidebarNavItem.production.tsx
-index c703417..b2cf6a1 100644
+index c703417..2d37daa 100644
 --- a/ui/src/components/SidebarNavItem.production.tsx
 +++ b/ui/src/components/SidebarNavItem.production.tsx
-@@ -6,6 +6,8 @@ import { useSidebar } from "../context/SidebarContext";
+@@ -6,6 +6,9 @@ import { useSidebar } from "../context/SidebarContext";
  import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
  import type { LucideIcon } from "lucide-react";
  import { Badge } from "@/components/ui/badge";
 +import { useTranslation } from "@/i18n";
 +import { sidebarItemTranslationKey } from "@/i18n/sidebar-labels";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
  
  /**
   * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
-@@ -89,6 +91,7 @@ export function SidebarNavItem({
+@@ -89,6 +92,7 @@ export function SidebarNavItem({
    trailingLabel,
    liveAccessory,
  }: SidebarNavItemProps) {
@@ -605,11 +1473,11 @@ index c703417..b2cf6a1 100644
    const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
    // A fixed-width contextual pane (SecondarySidebar) forces full labels even
    // when the global app sidebar is collapsed to its rail (PAP-10700).
-@@ -100,19 +103,27 @@ export function SidebarNavItem({
+@@ -100,19 +104,27 @@ export function SidebarNavItem({
  
    const hasBadge = badge != null && badge > 0;
    const hasLive = liveCount != null && liveCount > 0;
-+  const labelKey = sidebarItemTranslationKey(label);
++  const labelKey = sidebarItemTranslationKey(label) ?? settingsTranslationKey(label);
 +  const localizedLabel = labelKey ? t(labelKey, { defaultValue: label }) : label;
 +  const localizedBadgeLabel = badgeLabel === "unread"
 +    ? t("ui.sidebar.badge.unread")
@@ -637,7 +1505,7 @@ index c703417..b2cf6a1 100644
  
    const link = (
      <NavLink
-@@ -162,9 +173,9 @@ export function SidebarNavItem({
+@@ -162,9 +174,9 @@ export function SidebarNavItem({
            />
          )}
        </span>
@@ -649,7 +1517,7 @@ index c703417..b2cf6a1 100644
          <Badge variant="ghost"
            className={cn(
              "ml-auto px-1.5 text-(length:--text-nano) leading-none",
-@@ -173,7 +184,7 @@ export function SidebarNavItem({
+@@ -173,7 +185,7 @@ export function SidebarNavItem({
                : "bg-muted text-muted-foreground",
            )}
          >
@@ -658,7 +1526,7 @@ index c703417..b2cf6a1 100644
          </Badge>
        )}
        {!rail && (hasLive || liveAccessory) && (
-@@ -220,7 +231,7 @@ export function SidebarNavItem({
+@@ -220,7 +232,7 @@ export function SidebarNavItem({
        <TooltipTrigger asChild>
          <div>{link}</div>
        </TooltipTrigger>
@@ -668,19 +1536,20 @@ index c703417..b2cf6a1 100644
    );
  }
 diff --git a/ui/src/components/SidebarNavItem.tsx b/ui/src/components/SidebarNavItem.tsx
-index efbcfa4..5108603 100644
+index efbcfa4..2dbc0cd 100644
 --- a/ui/src/components/SidebarNavItem.tsx
 +++ b/ui/src/components/SidebarNavItem.tsx
-@@ -6,6 +6,8 @@ import { useSidebar } from "../context/SidebarContext";
+@@ -6,6 +6,9 @@ import { useSidebar } from "../context/SidebarContext";
  import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
  import type { LucideIcon } from "lucide-react";
  import { Badge } from "@/components/ui/badge";
 +import { useTranslation } from "@/i18n";
 +import { sidebarItemTranslationKey } from "@/i18n/sidebar-labels";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
  
  /**
   * Forces the full-label (non-rail) presentation for any `SidebarNavItem`
-@@ -87,6 +89,7 @@ export function SidebarNavItem({
+@@ -87,6 +90,7 @@ export function SidebarNavItem({
    trailingLabel,
    liveAccessory,
  }: SidebarNavItemProps) {
@@ -688,11 +1557,11 @@ index efbcfa4..5108603 100644
    const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
    // A contextual takeover forces full labels even when the saved global app
    // sidebar preference is collapsed.
-@@ -99,19 +102,27 @@ export function SidebarNavItem({
+@@ -99,19 +103,27 @@ export function SidebarNavItem({
    const hasBadge = badge != null && badge > 0;
    const hasLive = liveCount != null && liveCount > 0;
    const showIconSlot = Boolean(iconNode || Icon || alert || (rail && (hasLive || hasBadge)));
-+  const labelKey = sidebarItemTranslationKey(label);
++  const labelKey = sidebarItemTranslationKey(label) ?? settingsTranslationKey(label);
 +  const localizedLabel = labelKey ? t(labelKey, { defaultValue: label }) : label;
 +  const localizedBadgeLabel = badgeLabel === "unread"
 +    ? t("ui.sidebar.badge.unread")
@@ -720,7 +1589,7 @@ index efbcfa4..5108603 100644
  
    const link = (
      <NavLink
-@@ -167,9 +178,9 @@ export function SidebarNavItem({
+@@ -167,9 +179,9 @@ export function SidebarNavItem({
            )}
          </span>
        ) : null}
@@ -732,7 +1601,7 @@ index efbcfa4..5108603 100644
          <Badge variant="ghost"
            className={cn(
              "ml-auto px-1.5 text-(length:--text-nano) leading-none",
-@@ -178,7 +189,7 @@ export function SidebarNavItem({
+@@ -178,7 +190,7 @@ export function SidebarNavItem({
                : "bg-muted text-muted-foreground",
            )}
          >
@@ -741,7 +1610,7 @@ index efbcfa4..5108603 100644
          </Badge>
        )}
        {!rail && (hasLive || liveAccessory) && (
-@@ -225,7 +236,7 @@ export function SidebarNavItem({
+@@ -225,7 +237,7 @@ export function SidebarNavItem({
        <TooltipTrigger asChild>
          <div>{link}</div>
        </TooltipTrigger>
@@ -791,6 +1660,32 @@ index 34c7f8d..af43281 100644
          >
            {headerContent}
          </button>
+diff --git a/ui/src/components/SidebarShell.production.tsx b/ui/src/components/SidebarShell.production.tsx
+index 5d70676..8a175d5 100644
+--- a/ui/src/components/SidebarShell.production.tsx
++++ b/ui/src/components/SidebarShell.production.tsx
+@@ -218,7 +218,7 @@ export function SidebarShell({
+         {canResize ? (
+           <div
+             role="separator"
+-            aria-label="Resize sidebar"
++          aria-label="调整侧边栏宽度"
+             aria-orientation="vertical"
+             aria-valuemin={MIN_SIDEBAR_WIDTH}
+             aria-valuemax={MAX_SIDEBAR_WIDTH}
+diff --git a/ui/src/components/SidebarShell.tsx b/ui/src/components/SidebarShell.tsx
+index 9834434..611e54c 100644
+--- a/ui/src/components/SidebarShell.tsx
++++ b/ui/src/components/SidebarShell.tsx
+@@ -219,7 +219,7 @@ export function SidebarShell({
+       {canResize ? (
+         <div
+           role="separator"
+-          aria-label="Resize sidebar"
++          aria-label="调整侧边栏宽度"
+           aria-orientation="vertical"
+           aria-valuemin={MIN_SIDEBAR_WIDTH}
+           aria-valuemax={MAX_SIDEBAR_WIDTH}
 diff --git a/ui/src/components/ThemeToggle.tsx b/ui/src/components/ThemeToggle.tsx
 index 6da91a0..254cabb 100644
 --- a/ui/src/components/ThemeToggle.tsx
@@ -832,6 +1727,159 @@ index 6da91a0..254cabb 100644
          </span>
        </button>
      );
+diff --git a/ui/src/components/access/CompanySettingsNav.test.tsx b/ui/src/components/access/CompanySettingsNav.test.tsx
+index 9b14503..6dbf4f3 100644
+--- a/ui/src/components/access/CompanySettingsNav.test.tsx
++++ b/ui/src/components/access/CompanySettingsNav.test.tsx
+@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
+ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ import { queryKeys } from "@/lib/queryKeys";
++import { i18n } from "@/i18n";
+ import { CompanySettingsNav, getCompanySettingsTab } from "./CompanySettingsNav";
+ 
+ let currentPathname = "/company/settings";
+@@ -54,6 +55,7 @@ describe("CompanySettingsNav", () => {
+   let container: HTMLDivElement;
+ 
+   beforeEach(() => {
++    i18n.changeLanguage("zh-CN");
+     container = document.createElement("div");
+     document.body.appendChild(container);
+     currentPathname = "/company/settings";
+@@ -120,17 +122,17 @@ describe("CompanySettingsNav", () => {
+       expect.objectContaining({
+         value: "members",
+         items: [
+-          { value: "general", label: "General" },
+-          { value: "export", label: "Export" },
+-          { value: "import", label: "Import" },
+-          { value: "members", label: "Members" },
+-          { value: "secrets", label: "Secrets" },
+-          { value: "instance-profile", label: "Profile" },
+-          { value: "instance-environments", label: "Environments" },
+-          { value: "instance-access", label: "Access" },
+-          { value: "instance-experimental", label: "Experimental" },
+-          { value: "instance-plugins", label: "Plugins" },
+-          { value: "instance-adapters", label: "Adapters" },
++          { value: "general", label: "常规" },
++          { value: "export", label: "导出" },
++          { value: "import", label: "导入" },
++          { value: "members", label: "成员" },
++          { value: "secrets", label: "密钥" },
++          { value: "instance-profile", label: "个人资料" },
++          { value: "instance-environments", label: "运行环境" },
++          { value: "instance-access", label: "访问权限" },
++          { value: "instance-experimental", label: "实验功能" },
++          { value: "instance-plugins", label: "插件" },
++          { value: "instance-adapters", label: "适配器" },
+         ],
+       }),
+     );
+diff --git a/ui/src/components/access/CompanySettingsNav.tsx b/ui/src/components/access/CompanySettingsNav.tsx
+index ff59aac..f31b02e 100644
+--- a/ui/src/components/access/CompanySettingsNav.tsx
++++ b/ui/src/components/access/CompanySettingsNav.tsx
+@@ -4,6 +4,8 @@ import { useCloudInstance } from "@/hooks/useCloudInstance";
+ import { useHiddenSettings } from "@/hooks/useHiddenSettings";
+ import { INSTANCE_SETTINGS_PATH_PREFIX } from "@/lib/instance-settings";
+ import { useLocation, useNavigate } from "@/lib/router";
++import { useTranslation } from "@/i18n";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
+ 
+ const items = [
+   { value: "general", label: "General", href: "/company/settings" },
+@@ -93,6 +95,7 @@ export function getCompanySettingsTab(pathname: string): CompanySettingsTab {
+ }
+ 
+ export function CompanySettingsNav() {
++  const { t } = useTranslation();
+   const location = useLocation();
+   const navigate = useNavigate();
+   const { hidden: hiddenSettings } = useHiddenSettings();
+@@ -115,7 +118,10 @@ export function CompanySettingsNav() {
+   return (
+     <Tabs value={activeTab} onValueChange={handleTabChange}>
+       <PageTabBar
+-        items={visibleItems.map(({ value, label }) => ({ value, label }))}
++        items={visibleItems.map(({ value, label }) => ({
++          value,
++          label: t(settingsTranslationKey(label) ?? "", { defaultValue: label }),
++        }))}
+         value={activeTab}
+         onValueChange={handleTabChange}
+         align="start"
+diff --git a/ui/src/components/ui/command.tsx b/ui/src/components/ui/command.tsx
+index 4311e37..18b6bae 100644
+--- a/ui/src/components/ui/command.tsx
++++ b/ui/src/components/ui/command.tsx
+@@ -62,7 +62,7 @@ function CommandDialog({
+             className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-0 right-2 flex h-12 items-center rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+           >
+             <XIcon />
+-            <span className="sr-only">Close</span>
++            <span className="sr-only">关闭</span>
+           </DialogPrimitive.Close>
+         )}
+       </DialogContent>
+diff --git a/ui/src/components/ui/dialog.tsx b/ui/src/components/ui/dialog.tsx
+index cd0a9e9..3e1a6bf 100644
+--- a/ui/src/components/ui/dialog.tsx
++++ b/ui/src/components/ui/dialog.tsx
+@@ -71,7 +71,7 @@ function DialogContent({
+             className="ring-offset-background focus:ring-ring data-[state=open]:bg-accent data-[state=open]:text-muted-foreground absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+           >
+             <XIcon />
+-            <span className="sr-only">Close</span>
++            <span className="sr-only">关闭</span>
+           </DialogPrimitive.Close>
+         )}
+       </DialogPrimitive.Content>
+@@ -109,7 +109,7 @@ function DialogFooter({
+       {children}
+       {showCloseButton && (
+         <DialogPrimitive.Close asChild>
+-          <Button variant="outline">Close</Button>
++            <Button variant="outline">关闭</Button>
+         </DialogPrimitive.Close>
+       )}
+     </div>
+diff --git a/ui/src/components/ui/sheet.tsx b/ui/src/components/ui/sheet.tsx
+index 5963090..39d545c 100644
+--- a/ui/src/components/ui/sheet.tsx
++++ b/ui/src/components/ui/sheet.tsx
+@@ -77,7 +77,7 @@ function SheetContent({
+         {showCloseButton && (
+           <SheetPrimitive.Close className="ring-offset-background focus:ring-ring data-[state=open]:bg-secondary absolute top-4 right-4 rounded-xs opacity-70 transition-opacity hover:opacity-100 focus:ring-2 focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none">
+             <XIcon className="size-4" />
+-            <span className="sr-only">Close</span>
++            <span className="sr-only">关闭</span>
+           </SheetPrimitive.Close>
+         )}
+       </SheetPrimitive.Content>
+diff --git a/ui/src/context/BreadcrumbContext.tsx b/ui/src/context/BreadcrumbContext.tsx
+index b32e4bd..cda6cda 100644
+--- a/ui/src/context/BreadcrumbContext.tsx
++++ b/ui/src/context/BreadcrumbContext.tsx
+@@ -1,4 +1,6 @@
+ import { createContext, useCallback, useContext, useEffect, useState, type ReactNode, type MouseEventHandler } from "react";
++import { settingsTranslationKey } from "@/i18n/settings-labels";
++import { t } from "@/i18n";
+ 
+ export interface Breadcrumb {
+   label: string;
+@@ -68,7 +70,10 @@ function breadcrumbsEqual(left: Breadcrumb[], right: Breadcrumb[]) {
+ export function buildDocumentTitle(breadcrumbs: Breadcrumb[], companyName?: string | null) {
+   const pageParts = breadcrumbs.length === 0
+     ? []
+-    : [...breadcrumbs].reverse().map((breadcrumb) => breadcrumb.label);
++    : [...breadcrumbs].reverse().map((breadcrumb) => {
++      const key = settingsTranslationKey(breadcrumb.label);
++      return key ? t(key, { defaultValue: breadcrumb.label }) : breadcrumb.label;
++    });
+   const companyPart = companyName?.trim() ? [companyName.trim()] : [];
+   const parts = [...pageParts, ...companyPart, "Paperclip"];
+   return parts.join(" • ");
 diff --git a/ui/src/i18n/index.ts b/ui/src/i18n/index.ts
 index fb0bacd..adc2c6c 100644
 --- a/ui/src/i18n/index.ts
@@ -1028,7 +2076,7 @@ index 0000000..d6ef189
 +  }
 +}
 diff --git a/ui/src/i18n/locale-validation.test.ts b/ui/src/i18n/locale-validation.test.ts
-index ab0e417..e287aad 100644
+index ab0e417..69e802e 100644
 --- a/ui/src/i18n/locale-validation.test.ts
 +++ b/ui/src/i18n/locale-validation.test.ts
 @@ -1,14 +1,23 @@
@@ -1059,7 +2107,7 @@ index ab0e417..e287aad 100644
    });
  
    it("accepts registered locale files", () => {
-@@ -18,6 +27,35 @@ describe("locale validation", () => {
+@@ -18,6 +27,51 @@ describe("locale validation", () => {
      }
    });
  
@@ -1075,6 +2123,22 @@ index ab0e417..e287aad 100644
 +    expect(simplifiedChinese("ui.sidebar.items.dashboard")).toBe("仪表盘");
 +    expect(simplifiedChinese("ui.sidebar.badge.live", { count: 3 })).toBe("3 项正在运行");
 +    expect(simplifiedChinese("ui.organization.inviteNamed", { name: "Paperclip" })).toBe("邀请成员加入「Paperclip」");
++  });
++
++  it("provides Chinese copy for profile settings, preferences, and settings navigation", () => {
++    const simplifiedChinese = i18n.getFixedT("zh-CN");
++
++    expect(simplifiedChinese("ui.profile.title")).toBe("个人资料");
++    expect(simplifiedChinese("ui.profile.description")).toContain("侧边栏");
++    expect(simplifiedChinese("ui.profile.uploadPhoto")).toBe("上传照片");
++    expect(simplifiedChinese("ui.profile.keyboardShortcuts")).toBe("键盘快捷键");
++    expect(simplifiedChinese("ui.profile.preferencesLocalOnly")).toContain("仅保存在此浏览器");
++    expect(simplifiedChinese("ui.inboxPolicy.title")).toBe("允许智能体整理我的收件箱");
++    expect(simplifiedChinese("ui.inboxPolicy.anyAgentTitle")).toBe("允许我的所有智能体");
++    expect(simplifiedChinese("ui.settings.tabs.experimental")).toBe("实验功能");
++    expect(simplifiedChinese("ui.commandPalette.title")).toBe("命令面板");
++    expect(simplifiedChinese("ui.commandPalette.placeholder")).toBe("搜索任务、智能体、项目…");
++    expect(simplifiedChinese("ui.commandPalette.createTask")).toBe("创建新任务");
 +  });
 +
 +  it("changes the active UI locale and rejects unsupported choices", async () => {
@@ -1096,7 +2160,7 @@ index ab0e417..e287aad 100644
      expect(
        validateLocaleMessages({
 diff --git a/ui/src/i18n/locales.ts b/ui/src/i18n/locales.ts
-index 188ee2b..c993761 100644
+index 188ee2b..9e13eb8 100644
 --- a/ui/src/i18n/locales.ts
 +++ b/ui/src/i18n/locales.ts
 @@ -1,8 +1,11 @@
@@ -1111,7 +2175,7 @@ index 188ee2b..c993761 100644
  
  const localeModules = import.meta.glob("./locales/*.json", {
    eager: true,
-@@ -34,8 +37,18 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
+@@ -34,8 +37,21 @@ for (const [locale, messages] of Object.entries(localeMessages)) {
  
  export const supportedLocales = Object.keys(localeMessages);
  
@@ -1124,13 +2188,40 @@ index 188ee2b..c993761 100644
 +    {
 +      translation: {
 +        ...(messages as Record<string, unknown>),
-+        ui: locale === "zh-CN" ? simplifiedChineseUiMessages : englishUiMessages,
++        ui: {
++          ...(locale === "zh-CN" ? simplifiedChineseUiMessages : englishUiMessages),
++          ...((messages as Record<string, unknown>).ui as Record<string, unknown> | undefined),
++        },
 +      },
 +    },
 +  ]),
  ) as Resource;
  
  export type SupportedLocale = keyof typeof localeMessages;
+diff --git a/ui/src/i18n/settings-labels.ts b/ui/src/i18n/settings-labels.ts
+new file mode 100644
+index 0000000..5c6931e
+--- /dev/null
++++ b/ui/src/i18n/settings-labels.ts
+@@ -0,0 +1,18 @@
++const SETTINGS_LABEL_KEYS: Record<string, string> = {
++  Settings: "ui.settings.tabs.settings",
++  General: "ui.settings.tabs.general",
++  Export: "ui.settings.tabs.export",
++  Import: "ui.settings.tabs.import",
++  Members: "ui.settings.tabs.members",
++  Secrets: "ui.settings.tabs.secrets",
++  Profile: "ui.settings.tabs.profile",
++  Environments: "ui.settings.tabs.environments",
++  Access: "ui.settings.tabs.access",
++  Experimental: "ui.settings.tabs.experimental",
++  Plugins: "ui.settings.tabs.plugins",
++  Adapters: "ui.settings.tabs.adapters",
++};
++
++export function settingsTranslationKey(label: string): string | null {
++  return SETTINGS_LABEL_KEYS[label] ?? null;
++}
 diff --git a/ui/src/i18n/sidebar-labels.ts b/ui/src/i18n/sidebar-labels.ts
 new file mode 100644
 index 0000000..fb9f1a5
@@ -1191,10 +2282,10 @@ index 0000000..fb9f1a5
 +}
 diff --git a/ui/src/i18n/ui-messages/en.json b/ui/src/i18n/ui-messages/en.json
 new file mode 100644
-index 0000000..26cadff
+index 0000000..b1b516e
 --- /dev/null
 +++ b/ui/src/i18n/ui-messages/en.json
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,231 @@
 +{
 +  "sidebar": {
 +    "sections": {
@@ -1335,155 +2426,333 @@ index 0000000..26cadff
 +    "addAgent": "Add Agent",
 +    "start": "Start Onboarding",
 +    "cloudUnavailable": "Organizations are created in Paperclip Cloud. This instance can't reach it right now — try again from your Cloud portfolio."
++  },
++  "commandPalette": {
++    "title": "Command Palette",
++    "description": "Search for a command to run...",
++    "placeholder": "Search tasks, agents, projects...",
++    "noQuickMatches": "No quick task matches. Press",
++    "searchAllOrRefine": "to search all or keep typing to refine.",
++    "noResults": "No results found.",
++    "search": "Search",
++    "searchAllFor": "Search all for",
++    "openFullSearch": "open full search",
++    "quickFilters": "Quick filters",
++    "projects": "Projects",
++    "actions": "Actions",
++    "createTask": "Create new task",
++    "openFile": "Open file in this issue...",
++    "createAgent": "Create new agent",
++    "createProject": "Create new project",
++    "pages": "Pages",
++    "dashboard": "Dashboard",
++    "inbox": "Inbox",
++    "tasks": "Tasks",
++    "goals": "Goals",
++    "agents": "Agents",
++    "costs": "Costs",
++    "activity": "Activity"
++  },
++  "settings": {
++    "tabs": {
++      "settings": "Settings",
++      "general": "General",
++      "export": "Export",
++      "import": "Import",
++      "members": "Members",
++      "secrets": "Secrets",
++      "profile": "Profile",
++      "environments": "Environments",
++      "access": "Access",
++      "experimental": "Experimental",
++      "plugins": "Plugins",
++      "adapters": "Adapters"
++    }
++  },
++  "profile": {
++    "title": "Profile",
++    "description": "Choose how your account appears in the sidebar and across the console.",
++    "loading": "Loading profile...",
++    "loadFailed": "Failed to load profile.",
++    "updateFailed": "Failed to update profile.",
++    "uploadFailed": "Failed to upload avatar.",
++    "removeFailed": "Failed to remove avatar.",
++    "selectOrganizationForAvatar": "Select an organization to upload an avatar to Paperclip storage.",
++    "uploadStoredFor": "Your avatar will be stored in the Paperclip file storage for {{name}}.",
++    "avatarHint": "Click your avatar to upload a new image. {{uploadHint}}",
++    "changePhoto": "Change photo",
++    "uploadPhoto": "Upload photo",
++    "removePhoto": "Remove",
++    "displayName": "Display name",
++    "displayNameDescription": "Shown in the sidebar account area and as the author of your comments.",
++    "email": "Email",
++    "emailDescription": "Your email is managed by your sign-in session and is read-only here.",
++    "save": "Save profile",
++    "saving": "Saving...",
++    "keyboardShortcuts": "Keyboard shortcuts",
++    "keyboardShortcutsDescription": "Enable app shortcuts, including inbox navigation and global shortcuts for creating tasks and switching panels. This setting applies to your account across organizations and devices, and is off by default.",
++    "toggleKeyboardShortcuts": "Toggle keyboard shortcuts",
++    "preferencesLocalOnly": "This preference is stored in this browser only."
++  },
++  "inboxPolicy": {
++    "title": "Allow agents to manage my inbox",
++    "description": "Choose whether agents you manage may archive tasks from your inbox on your behalf. Archiving is reversible, and each agent archive is recorded on the task.",
++    "ariaLabel": "Agent inbox archive policy",
++    "anyAgentTitle": "Allow all my agents",
++    "anyAgentDescription": "Allow any agent you manage to archive inbox tasks.",
++    "chosenAgentsTitle": "Allow selected agents",
++    "chosenAgentsDescription": "Only allow agents selected below to organize your inbox.",
++    "offTitle": "Off",
++    "offDescription": "Do not allow agents to archive inbox tasks.",
++    "allowedAgents": "Agents allowed to manage your inbox",
++    "selectAgents": "Select agents",
++    "oneAgentSelected": "{{count}} agent selected",
++    "agentsSelected": "{{count}} agents selected",
++    "noManagedAgents": "You do not currently manage any agents.",
++    "loadFailed": "Failed to load inbox agent policy.",
++    "loading": "Loading inbox agent policy...",
++    "saveFailed": "Failed to save inbox agent policy.",
++    "saved": "Saved",
++    "save": "Save",
++    "saving": "Saving..."
 +  }
 +}
 diff --git a/ui/src/i18n/ui-messages/zh-CN.json b/ui/src/i18n/ui-messages/zh-CN.json
 new file mode 100644
-index 0000000..db50843
+index 0000000..177a9cd
 --- /dev/null
 +++ b/ui/src/i18n/ui-messages/zh-CN.json
-@@ -0,0 +1,142 @@
+@@ -0,0 +1,231 @@
 +{
-+  "sidebar": {
-+    "sections": {
-+      "work": "工作",
-+      "company": "公司",
-+      "organization": "组织",
-+      "org": "组织架构",
-+      "recentTasks": "最近任务"
-+    },
-+    "items": {
-+      "search": "搜索",
-+      "dashboard": "仪表盘",
-+      "inbox": "收件箱",
-+      "decisions": "决策",
-+      "status": "状态",
-+      "conferenceRoom": "会议室",
-+      "tasks": "任务",
-+      "projects": "项目",
-+      "routines": "例行任务",
-+      "artifacts": "成果",
-+      "cases": "案例",
-+      "pipelines": "流程",
-+      "goals": "目标",
-+      "workspaces": "工作区",
-+      "agents": "智能体",
-+      "org": "组织架构",
-+      "skills": "技能",
-+      "connectors": "连接器",
-+      "audit": "审计",
-+      "timeline": "时间线",
-+      "costs": "费用",
-+      "activity": "活动记录",
-+      "settings": "设置",
-+      "browse": "浏览",
-+      "connections": "连接",
-+      "general": "常规",
-+      "members": "成员",
-+      "invites": "邀请",
-+      "secrets": "密钥",
-+      "export": "导出",
-+      "import": "导入",
-+      "backToApp": "返回应用"
-+    },
-+    "badge": {
-+      "live": "{{count}} 项正在运行",
-+      "unread": "未读",
-+      "decisions": "项待决策",
-+      "attentionNeeded": "需要关注",
-+      "beta": "测试版"
-+    },
-+    "actions": "操作"
-+  },
-+  "account": {
-+    "openMenu": "打开账户菜单",
-+    "settings": "设置",
-+    "viewProfile": "查看个人资料",
-+    "editProfile": "编辑个人资料",
-+    "documentation": "使用文档",
-+    "language": "界面语言",
-+    "english": "English",
-+    "simplifiedChinese": "简体中文",
-+    "signOut": "退出登录",
-+    "signingOut": "正在退出…",
-+    "shareFeedback": "提交反馈",
-+    "board": "控制台",
-+    "signedIn": "已登录",
-+    "localBoard": "本地工作区控制台",
-+    "viewProfileDescription": "查看您的活动、任务与用量记录。",
-+    "editProfileDescription": "修改显示名称和头像。",
-+    "documentationDescription": "在新标签页打开 Paperclip 文档。",
-+    "endSession": "结束当前浏览器会话。",
-+    "switchToLight": "切换到浅色模式",
-+    "switchToDark": "切换到深色模式",
-+    "toggleAppearance": "切换应用的明暗外观。"
-+  },
-+  "organization": {
-+    "noun": "组织",
-+    "select": "选择组织",
-+    "openSwitcher": "打开组织切换菜单",
-+    "openNamedSwitcher": "打开「{{name}}」组织切换菜单",
-+    "reorder": "调整「{{name}}」的顺序",
-+    "listTitle": "组织",
-+    "edit": "编辑",
-+    "done": "完成",
-+    "loadFailed": "无法加载组织",
-+    "tryAgain": "重试",
-+    "empty": "暂无组织",
-+    "create": "创建组织",
-+    "invite": "邀请成员",
-+    "inviteNamed": "邀请成员加入「{{name}}」"
-+  },
-+  "dashboard": {
-+    "title": "仪表盘",
-+    "emptyWelcome": "欢迎使用 Paperclip。创建第一个组织和智能体即可开始。",
-+    "getStarted": "开始设置",
-+    "selectOrganization": "创建或选择一个组织以查看仪表盘。",
-+    "importedPausedTitle": "导入的 {{count}} 个智能体已暂停，当前不会运行。",
-+    "resumeAll": "全部恢复",
-+    "resumePending": "正在恢复…",
-+    "importedPausedDescription": "从组织导入的智能体默认处于暂停状态。恢复后，它们才能开始处理已分配的任务。",
-+    "allPausedTitle": "此组织中的智能体均已暂停，没有任务会运行。",
-+    "reviewAgents": "查看智能体",
-+    "allPausedDescription": "至少恢复一个智能体，已分配的任务才能开始执行。",
-+    "noAgents": "此组织还没有智能体。",
-+    "createAgent": "在此创建",
-+    "budgetIncident": "有 {{count}} 项预算事件正在处理",
-+    "budgetSummary": "{{agents}} 个智能体已暂停 · {{projects}} 个项目已暂停 · {{approvals}} 项预算待审批",
-+    "openBudgets": "查看预算",
-+    "agentsEnabled": "已启用智能体",
-+    "running": "{{count}} 个运行中",
-+    "paused": "{{count}} 个已暂停",
-+    "errors": "{{count}} 项错误",
-+    "tasksInProgress": "进行中的任务",
-+    "openTasks": "{{count}} 项未开始",
-+    "blockedTasks": "{{count}} 项受阻",
-+    "monthSpend": "本月支出",
-+    "budgetPercent": "已用预算 {{percent}}%（总额 {{amount}}）",
-+    "unlimitedBudget": "预算不限额",
-+    "pendingApprovals": "待审批",
-+    "budgetOverrides": "{{count}} 项预算调整等待控制台审核",
-+    "awaitingBoardReview": "等待控制台审核",
-+    "runActivity": "运行活动",
-+    "last14Days": "最近 14 天",
-+    "tasksByPriority": "按优先级查看任务",
-+    "tasksByStatus": "按状态查看任务",
-+    "successRate": "成功率",
-+    "recentActivity": "最近活动",
-+    "recentTasks": "最近任务",
-+    "noTasks": "还没有任务。"
-+  },
-+  "onboarding": {
-+    "addAgentTitle": "为「{{name}}」添加智能体",
-+    "createAnotherTitle": "创建另一个组织",
-+    "createFirstTitle": "创建您的第一个组织",
-+    "addAgentDescription": "重新运行引导流程，为此组织添加智能体和初始任务。",
-+    "createAnotherDescription": "重新运行引导流程，创建另一个组织并配置首个智能体。",
-+    "createFirstDescription": "创建组织和首个智能体，开始使用 Paperclip。",
-+    "addAgent": "添加智能体",
-+    "start": "开始引导设置",
-+    "cloudUnavailable": "组织需在 Paperclip Cloud 中创建。此实例暂时无法连接，请前往 Cloud 控制台重试。"
-+  }
++    "sidebar":  {
++                    "sections":  {
++                                     "work":  "工作",
++                                     "company":  "公司",
++                                     "organization":  "组织",
++                                     "org":  "组织架构",
++                                     "recentTasks":  "最近任务"
++                                 },
++                    "items":  {
++                                  "search":  "搜索",
++                                  "dashboard":  "仪表盘",
++                                  "inbox":  "收件箱",
++                                  "decisions":  "决策",
++                                  "status":  "状态",
++                                  "conferenceRoom":  "会议室",
++                                  "tasks":  "任务",
++                                  "projects":  "项目",
++                                  "routines":  "例行任务",
++                                  "artifacts":  "成果",
++                                  "cases":  "案例",
++                                  "pipelines":  "流程",
++                                  "goals":  "目标",
++                                  "workspaces":  "工作区",
++                                  "agents":  "智能体",
++                                  "org":  "组织架构",
++                                  "skills":  "技能",
++                                  "connectors":  "连接器",
++                                  "audit":  "审计",
++                                  "timeline":  "时间线",
++                                  "costs":  "费用",
++                                  "activity":  "活动记录",
++                                  "settings":  "设置",
++                                  "browse":  "浏览",
++                                  "connections":  "连接",
++                                  "general":  "常规",
++                                  "members":  "成员",
++                                  "invites":  "邀请",
++                                  "secrets":  "密钥",
++                                  "export":  "导出",
++                                  "import":  "导入",
++                                  "backToApp":  "返回应用"
++                              },
++                    "badge":  {
++                                  "live":  "{{count}} 项正在运行",
++                                  "unread":  "未读",
++                                  "decisions":  "项待决策",
++                                  "attentionNeeded":  "需要关注",
++                                  "beta":  "测试版"
++                              },
++                    "actions":  "操作"
++                },
++    "account":  {
++                    "openMenu":  "打开账户菜单",
++                    "settings":  "设置",
++                    "viewProfile":  "查看个人资料",
++                    "editProfile":  "编辑个人资料",
++                    "documentation":  "使用文档",
++                    "language":  "界面语言",
++                    "english":  "English",
++                    "simplifiedChinese":  "简体中文",
++                    "signOut":  "退出登录",
++                    "signingOut":  "正在退出…",
++                    "shareFeedback":  "提交反馈",
++                    "board":  "控制台",
++                    "signedIn":  "已登录",
++                    "localBoard":  "本地工作区控制台",
++                    "viewProfileDescription":  "查看您的活动、任务与用量记录。",
++                    "editProfileDescription":  "修改显示名称和头像。",
++                    "documentationDescription":  "在新标签页打开 Paperclip 文档。",
++                    "endSession":  "结束当前浏览器会话。",
++                    "switchToLight":  "切换到浅色模式",
++                    "switchToDark":  "切换到深色模式",
++                    "toggleAppearance":  "切换应用的明暗外观。"
++                },
++    "organization":  {
++                         "noun":  "组织",
++                         "select":  "选择组织",
++                         "openSwitcher":  "打开组织切换菜单",
++                         "openNamedSwitcher":  "打开「{{name}}」组织切换菜单",
++                         "reorder":  "调整「{{name}}」的顺序",
++                         "listTitle":  "组织",
++                         "edit":  "编辑",
++                         "done":  "完成",
++                         "loadFailed":  "无法加载组织",
++                         "tryAgain":  "重试",
++                         "empty":  "暂无组织",
++                         "create":  "创建组织",
++                         "invite":  "邀请成员",
++                         "inviteNamed":  "邀请成员加入「{{name}}」"
++                     },
++    "dashboard":  {
++                      "title":  "仪表盘",
++                      "emptyWelcome":  "欢迎使用 Paperclip。创建第一个组织和智能体即可开始。",
++                      "getStarted":  "开始设置",
++                      "selectOrganization":  "创建或选择一个组织以查看仪表盘。",
++                      "importedPausedTitle":  "导入的 {{count}} 个智能体已暂停，当前不会运行。",
++                      "resumeAll":  "全部恢复",
++                      "resumePending":  "正在恢复…",
++                      "importedPausedDescription":  "从组织导入的智能体默认处于暂停状态。恢复后，它们才能开始处理已分配的任务。",
++                      "allPausedTitle":  "此组织中的智能体均已暂停，没有任务会运行。",
++                      "reviewAgents":  "查看智能体",
++                      "allPausedDescription":  "至少恢复一个智能体，已分配的任务才能开始执行。",
++                      "noAgents":  "此组织还没有智能体。",
++                      "createAgent":  "在此创建",
++                      "budgetIncident":  "有 {{count}} 项预算事件正在处理",
++                      "budgetSummary":  "{{agents}} 个智能体已暂停 · {{projects}} 个项目已暂停 · {{approvals}} 项预算待审批",
++                      "openBudgets":  "查看预算",
++                      "agentsEnabled":  "已启用智能体",
++                      "running":  "{{count}} 个运行中",
++                      "paused":  "{{count}} 个已暂停",
++                      "errors":  "{{count}} 项错误",
++                      "tasksInProgress":  "进行中的任务",
++                      "openTasks":  "{{count}} 项未开始",
++                      "blockedTasks":  "{{count}} 项受阻",
++                      "monthSpend":  "本月支出",
++                      "budgetPercent":  "已用预算 {{percent}}%（总额 {{amount}}）",
++                      "unlimitedBudget":  "预算不限额",
++                      "pendingApprovals":  "待审批",
++                      "budgetOverrides":  "{{count}} 项预算调整等待控制台审核",
++                      "awaitingBoardReview":  "等待控制台审核",
++                      "runActivity":  "运行活动",
++                      "last14Days":  "最近 14 天",
++                      "tasksByPriority":  "按优先级查看任务",
++                      "tasksByStatus":  "按状态查看任务",
++                      "successRate":  "成功率",
++                      "recentActivity":  "最近活动",
++                      "recentTasks":  "最近任务",
++                      "noTasks":  "还没有任务。"
++                  },
++    "onboarding":  {
++                       "addAgentTitle":  "为「{{name}}」添加智能体",
++                       "createAnotherTitle":  "创建另一个组织",
++                       "createFirstTitle":  "创建您的第一个组织",
++                       "addAgentDescription":  "重新运行引导流程，为此组织添加智能体和初始任务。",
++                       "createAnotherDescription":  "重新运行引导流程，创建另一个组织并配置首个智能体。",
++                       "createFirstDescription":  "创建组织和首个智能体，开始使用 Paperclip。",
++                       "addAgent":  "添加智能体",
++                       "start":  "开始引导设置",
++                       "cloudUnavailable":  "组织需在 Paperclip Cloud 中创建。此实例暂时无法连接，请前往 Cloud 控制台重试。"
++                   },
++    "commandPalette":  {
++                           "title":  "命令面板",
++                           "description":  "搜索要运行的命令…",
++                           "placeholder":  "搜索任务、智能体、项目…",
++                           "noQuickMatches":  "没有匹配的快捷任务。按",
++                           "searchAllOrRefine":  "搜索全部，或继续输入以缩小范围。",
++                           "noResults":  "未找到结果。",
++                           "search":  "搜索",
++                           "searchAllFor":  "搜索全部：",
++                           "openFullSearch":  "打开完整搜索",
++                           "quickFilters":  "快捷筛选",
++                           "projects":  "项目",
++                           "actions":  "操作",
++                           "createTask":  "创建新任务",
++                           "openFile":  "在此任务中打开文件…",
++                           "createAgent":  "创建新智能体",
++                           "createProject":  "创建新项目",
++                           "pages":  "页面",
++                           "dashboard":  "仪表盘",
++                           "inbox":  "收件箱",
++                           "tasks":  "任务",
++                           "goals":  "目标",
++                           "agents":  "智能体",
++                           "costs":  "费用",
++                           "activity":  "活动记录"
++                       },
++    "settings":  {
++                     "tabs":  {
++                                  "settings":  "设置",
++                                  "general":  "常规",
++                                  "export":  "导出",
++                                  "import":  "导入",
++                                  "members":  "成员",
++                                  "secrets":  "密钥",
++                                  "profile":  "个人资料",
++                                  "environments":  "运行环境",
++                                  "access":  "访问权限",
++                                  "experimental":  "实验功能",
++                                  "plugins":  "插件",
++                                  "adapters":  "适配器"
++                              }
++                 },
++    "profile":  {
++                    "title":  "个人资料",
++                    "description": "设置账户在侧边栏及其他控制台界面中的显示方式。",
++                    "loading": "正在加载个人资料…",
++                    "loadFailed": "加载个人资料失败。",
++                    "updateFailed": "更新个人资料失败。",
++                    "uploadFailed": "上传头像失败。",
++                    "removeFailed": "移除头像失败。",
++                    "selectOrganizationForAvatar": "请选择组织，再将头像上传到 Paperclip 存储。",
++                    "uploadStoredFor": "头像将保存在「{{name}}」的 Paperclip 文件存储中。",
++                    "avatarHint": "点击头像即可上传新图片。{{uploadHint}}",
++                    "changePhoto": "更换照片",
++                    "uploadPhoto": "上传照片",
++                    "removePhoto": "移除",
++                    "displayName": "显示名称",
++                    "displayNameDescription": "显示在侧边栏账户区域和评论作者信息中。",
++                    "email": "电子邮箱",
++                    "emailDescription": "电子邮箱由登录会话管理，此处为只读。",
++                    "save": "保存个人资料",
++                    "saving": "正在保存…",
++                    "keyboardShortcuts":  "键盘快捷键",
++                    "keyboardShortcutsDescription": "启用应用快捷键，包括收件箱导航，以及创建任务、切换面板等全局快捷键。此设置适用于您在所有组织和设备上的账户，默认关闭。",
++                    "toggleKeyboardShortcuts": "切换键盘快捷键",
++                    "preferencesLocalOnly":  "当前服务端尚不支持同步此偏好；设置仅保存在此浏览器中。"
++                },
++    "inboxPolicy":  {
++                        "title":  "允许智能体整理我的收件箱",
++                        "description": "选择是否允许您管理的智能体代您将任务从收件箱归档。归档后可以撤销，每项智能体归档操作都会记录在任务属性中。",
++                        "ariaLabel": "智能体收件箱归档策略",
++                        "anyAgentTitle": "允许我的所有智能体",
++                        "anyAgentDescription": "允许您管理的任何智能体将收件箱任务归档。",
++                        "chosenAgentsTitle": "仅允许指定智能体",
++                        "chosenAgentsDescription": "仅允许您在下方选择的智能体整理收件箱。",
++                        "offTitle": "关闭",
++                        "offDescription": "不允许智能体归档收件箱中的任务。",
++                        "allowedAgents": "可整理收件箱的智能体",
++                        "selectAgents": "选择智能体",
++                        "oneAgentSelected": "已选择 {{count}} 个智能体",
++                        "agentsSelected": "已选择 {{count}} 个智能体",
++                        "noManagedAgents": "您目前没有管理任何智能体。",
++                        "loadFailed": "加载收件箱智能体策略失败。",
++                        "loading": "正在加载收件箱智能体策略…",
++                        "saveFailed": "保存收件箱智能体策略失败。",
++                        "saved": "已保存",
++                        "save": "保存",
++                        "saving": "正在保存…"
++                    }
 +}
 diff --git a/ui/src/pages/Dashboard.tsx b/ui/src/pages/Dashboard.tsx
 index 756727f..b10503a 100644
@@ -1728,3 +2997,248 @@ index 756727f..b10503a 100644
                  </Card>
                ) : (
                  <Card className="@container block py-0 divide-y divide-border overflow-hidden">
+diff --git a/ui/src/pages/ProfileSettings.test.tsx b/ui/src/pages/ProfileSettings.test.tsx
+index c53ca77..a488186 100644
+--- a/ui/src/pages/ProfileSettings.test.tsx
++++ b/ui/src/pages/ProfileSettings.test.tsx
+@@ -33,6 +33,10 @@ vi.mock("@/api/assets", () => ({
+   assetsApi: mockAssetsApi,
+ }));
+ 
++vi.mock("@/components/InboxAgentPolicyControl", () => ({
++  InboxAgentPolicyControl: () => <div data-testid="inbox-agent-policy" />,
++}));
++
+ vi.mock("../context/BreadcrumbContext", () => ({
+   useBreadcrumbs: () => ({
+     setBreadcrumbs: mockSetBreadcrumbs,
+@@ -100,7 +104,7 @@ describe("ProfileSettings", () => {
+     });
+     await flushReact();
+     await flushReact();
+-    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Toggle keyboard shortcuts"]');
++    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="切换键盘快捷键"]');
+     expect(toggle).not.toBeNull();
+     expect(toggle?.disabled).toBe(false);
+     await act(async () => toggle?.click());
+@@ -120,13 +124,29 @@ describe("ProfileSettings", () => {
+     });
+     await flushReact();
+     await flushReact();
+-    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Toggle keyboard shortcuts"]')?.click());
++    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="切换键盘快捷键"]')?.click());
+     await flushReact();
+     expect(container.textContent).toContain("Could not save shortcuts");
+     expect(queryClient.getQueryData(["auth", "preferences", "user-1"])).toEqual({ keyboardShortcuts: false });
+     await act(async () => root.unmount());
+   });
+ 
++  it("renders Chinese profile copy and explains when preferences are browser-local", async () => {
++    mockAuthApi.getPreferences.mockResolvedValue({ keyboardShortcuts: false, localOnly: true });
++    const root = createRoot(container);
++    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
++    await act(async () => {
++      root.render(<QueryClientProvider client={queryClient}><ProfileSettings /></QueryClientProvider>);
++    });
++    await flushReact();
++    await flushReact();
++
++    expect(container.textContent).toContain("个人资料");
++    expect(container.textContent).toContain("键盘快捷键");
++    expect(container.textContent).toContain("仅保存在此浏览器");
++    await act(async () => root.unmount());
++  });
++
+   it("uploads a clicked avatar into Paperclip storage and persists the returned asset path", async () => {
+     const root = createRoot(container);
+     const queryClient = new QueryClient({
+diff --git a/ui/src/pages/ProfileSettings.tsx b/ui/src/pages/ProfileSettings.tsx
+index d79af64..6e77638 100644
+--- a/ui/src/pages/ProfileSettings.tsx
++++ b/ui/src/pages/ProfileSettings.tsx
+@@ -15,6 +15,7 @@ import { Input } from "@/components/ui/input";
+ import { Label } from "@/components/ui/label";
+ import { ToggleSwitch } from "@/components/ui/toggle-switch";
+ import { useUserPreferences } from "../hooks/useUserPreferences";
++import { useTranslation } from "@/i18n";
+ 
+ function deriveInitials(name: string) {
+   const parts = name.trim().split(/\s+/).filter(Boolean);
+@@ -23,6 +24,7 @@ function deriveInitials(name: string) {
+ }
+ 
+ export function ProfileSettings() {
++  const { t } = useTranslation();
+   const { setBreadcrumbs } = useBreadcrumbs();
+   const { selectedCompanyId, selectedCompany } = useCompany();
+   const queryClient = useQueryClient();
+@@ -90,14 +92,14 @@ export function ProfileSettings() {
+       setImage(profile.image ?? "");
+     },
+     onError: (error) => {
+-      setActionError(error instanceof Error ? error.message : "Failed to update profile.");
++      setActionError(error instanceof Error ? error.message : t("ui.profile.updateFailed"));
+     },
+   });
+ 
+   const uploadAvatarMutation = useMutation({
+     mutationFn: async (file: File) => {
+       if (!selectedCompanyId) {
+-        throw new Error("Select an organization before uploading a profile avatar.");
++        throw new Error(t("ui.profile.selectOrganizationForAvatar"));
+       }
+ 
+       const asset = await assetsApi.uploadImage(
+@@ -113,7 +115,7 @@ export function ProfileSettings() {
+       setImage(profile.image ?? "");
+     },
+     onError: (error) => {
+-      setActionError(error instanceof Error ? error.message : "Failed to upload avatar.");
++      setActionError(error instanceof Error ? error.message : t("ui.profile.uploadFailed"));
+     },
+   });
+ 
+@@ -125,18 +127,18 @@ export function ProfileSettings() {
+       setImage(profile.image ?? "");
+     },
+     onError: (error) => {
+-      setActionError(error instanceof Error ? error.message : "Failed to remove avatar.");
++      setActionError(error instanceof Error ? error.message : t("ui.profile.removeFailed"));
+     },
+   });
+ 
+   if (sessionQuery.isLoading) {
+-    return <div className="text-sm text-muted-foreground">Loading profile...</div>;
++    return <div className="text-sm text-muted-foreground">{t("ui.profile.loading")}</div>;
+   }
+ 
+   if (sessionQuery.error || !sessionQuery.data) {
+     return (
+       <div className="text-sm text-destructive">
+-        {sessionQuery.error instanceof Error ? sessionQuery.error.message : "Failed to load profile."}
++        {sessionQuery.error instanceof Error ? sessionQuery.error.message : t("ui.profile.loadFailed")}
+       </div>
+     );
+   }
+@@ -146,18 +148,18 @@ export function ProfileSettings() {
+   const initials = deriveInitials(currentName);
+   const isSavingProfile = updateMutation.isPending || uploadAvatarMutation.isPending || removeAvatarMutation.isPending;
+   const uploadHint = selectedCompany
+-    ? `Stored in Paperclip file storage for ${selectedCompany.name}.`
+-    : "Select an organization to upload an avatar into Paperclip storage.";
++    ? t("ui.profile.uploadStoredFor", { name: selectedCompany.name })
++    : t("ui.profile.selectOrganizationForAvatar");
+ 
+   return (
+     <div className="max-w-6xl space-y-6">
+       <div className="space-y-2">
+         <div className="flex items-center gap-2">
+           <UserRoundPen className="h-5 w-5 text-muted-foreground" />
+-          <h1 className="text-lg font-semibold">Profile</h1>
++          <h1 className="text-lg font-semibold">{t("ui.profile.title")}</h1>
+         </div>
+         <p className="text-sm text-muted-foreground">
+-          Control how your account appears in the sidebar and other board surfaces.
++          {t("ui.profile.description")}
+         </p>
+       </div>
+ 
+@@ -209,7 +211,7 @@ export function ProfileSettings() {
+                     disabled={!selectedCompanyId || isSavingProfile}
+                   >
+                     {uploadAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Camera className="size-4" />}
+-                    {currentImage ? "Change photo" : "Upload photo"}
++                    {currentImage ? t("ui.profile.changePhoto") : t("ui.profile.uploadPhoto")}
+                   </Button>
+                   {currentImage ? (
+                     <Button
+@@ -219,7 +221,7 @@ export function ProfileSettings() {
+                       disabled={isSavingProfile}
+                     >
+                       {removeAvatarMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+-                      Remove
++                      {t("ui.profile.removePhoto")}
+                     </Button>
+                   ) : null}
+                 </div>
+@@ -231,7 +233,7 @@ export function ProfileSettings() {
+                   <p className="truncate text-sm text-muted-foreground">{sessionQuery.data.user.email ?? "No email"}</p>
+                 </div>
+                 <p className="max-w-2xl text-sm leading-6 text-muted-foreground">
+-                  Click the avatar to upload a new image. {uploadHint}
++                  {t("ui.profile.avatarHint", { uploadHint })}
+                 </p>
+               </div>
+             </div>
+@@ -246,21 +248,21 @@ export function ProfileSettings() {
+           }}
+         >
+           <div className="space-y-2">
+-            <Label htmlFor="profile-name">Display name</Label>
++            <Label htmlFor="profile-name">{t("ui.profile.displayName")}</Label>
+             <Input
+               id="profile-name"
+               value={name}
+               onChange={(event) => setName(event.target.value)}
+               maxLength={120}
+-              placeholder="Board"
++              placeholder={t("ui.account.board")}
+             />
+             <p className="text-xs text-muted-foreground">
+-              Shown in the sidebar account footer and comment author surfaces.
++              {t("ui.profile.displayNameDescription")}
+             </p>
+           </div>
+ 
+           <div className="space-y-2">
+-            <Label htmlFor="profile-email">Email</Label>
++            <Label htmlFor="profile-email">{t("ui.profile.email")}</Label>
+             <Input
+               id="profile-email"
+               value={sessionQuery.data.user.email ?? ""}
+@@ -268,14 +270,14 @@ export function ProfileSettings() {
+               disabled
+             />
+             <p className="text-xs text-muted-foreground">
+-              Email is managed by your auth session and is read-only here.
++              {t("ui.profile.emailDescription")}
+             </p>
+           </div>
+ 
+           <div className="md:col-span-2 flex justify-end">
+             <Button type="submit" disabled={isSavingProfile || !name.trim()}>
+               {updateMutation.isPending ? <LoaderCircle className="size-4 animate-spin" /> : <Save className="size-4" />}
+-              {updateMutation.isPending ? "Saving..." : "Save profile"}
++              {updateMutation.isPending ? t("ui.profile.saving") : t("ui.profile.save")}
+             </Button>
+           </div>
+         </form>
+@@ -283,10 +285,9 @@ export function ProfileSettings() {
+         <section>
+           <div className="flex items-start justify-between gap-4">
+             <div className="space-y-1.5">
+-              <h2 className="text-sm font-semibold">Keyboard shortcuts</h2>
++              <h2 className="text-sm font-semibold">{t("ui.profile.keyboardShortcuts")}</h2>
+               <p className="max-w-2xl text-sm text-muted-foreground">
+-                Enable app keyboard shortcuts, including inbox navigation and global shortcuts like creating tasks or
+-                toggling panels. This applies only to your account, across all organizations and devices. Off by default.
++                {t("ui.profile.keyboardShortcutsDescription")}
+               </p>
+             </div>
+             <ToggleSwitch
+@@ -295,9 +296,14 @@ export function ProfileSettings() {
+                 if (selectedCompanyId && sessionQuery.data?.user.id) updatePreferencesMutation.mutate({ companyId: selectedCompanyId, keyboardShortcuts, expectedUserId: sessionQuery.data.user.id });
+               }}
+               disabled={!selectedCompanyId || !preferencesQuery.data || preferencesQuery.isError || updatePreferencesMutation.isPending}
+-              aria-label="Toggle keyboard shortcuts"
++              aria-label={t("ui.profile.toggleKeyboardShortcuts")}
+             />
+           </div>
++          {preferencesQuery.data?.localOnly ? (
++            <p className="mt-2 text-xs text-muted-foreground" role="status">
++              {t("ui.profile.preferencesLocalOnly")}
++            </p>
++          ) : null}
+           {preferencesQuery.error || updatePreferencesMutation.error ? (
+             <p role="alert" className="text-sm text-destructive">
+               {(updatePreferencesMutation.error ?? preferencesQuery.error)?.message}

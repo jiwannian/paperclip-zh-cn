@@ -3,7 +3,7 @@ Paperclip 简体中文补丁验证记录
 
 上游基线：0f14d261233c545aa6a8a38ec253c498a5130fff
 本地验证提交：42c8882e7d374cdacf8603c1449a455a035846f1
-变更分支/字段：Chinese-default UI locale、语言偏好与账户菜单选择；侧边栏、组织切换器、主题切换、Dashboard 和引导页文案。
+变更分支/字段：默认简体中文 locale、浏览器语言偏好及账户语言切换；侧栏/组织切换/主题、Dashboard/引导页文案；设置导航、Profile、收件箱策略、命令面板、无障碍标签和旧服务端 API 兼容。
 补丁文件：paperclip-zh-cn.patch
 
 BASELINE
@@ -44,3 +44,81 @@ ROLLBACK
 安装包完整性
 ============
 原始 paperclip-upstream.zip SHA-256：95E74B8E4005C89BB6518648156AD9A969003D3DC371FBB912D52A9E538BF5C5（保持未修改）。
+
+深度汉化复验（2026-09-29）
+========================
+变更分支/字段：设置侧栏与文档标题；Profile 与收件箱策略完整词条；命令面板；公共无障碍标签；旧服务端偏好接口兼容。
+
+BASELINE
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/i18n/locale-validation.test.ts
+输入：未应用本轮深度汉化变更的上游基线。
+结果：先前记录为 Test Files 1 passed (1); Tests 7 passed (7); exit status 0。
+
+MODIFIED
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/components/CompanySettingsSidebar.test.tsx src/components/access/CompanySettingsNav.test.tsx src/context/BreadcrumbContext.test.tsx src/i18n/locale-validation.test.ts src/i18n/locale-preference.test.ts
+输入：本轮深度汉化源码。
+结果：Test Files 5 passed (5); Tests 34 passed (34); exit status 0。
+
+命令（工作目录：Paperclip/ui）：
+  node node_modules/vite/bin/vite.js build
+输入：本轮深度汉化 UI 源码。
+结果：built in 1.86s; exit status 0；保留上游 CSS ::highlight 与 chunk 大小警告。
+
+运行验收
+命令：
+  Invoke-RestMethod http://127.0.0.1:3100/api/health
+结果：{"status":"ok","version":"2026.916.1"}; exit status 0。
+页面：
+  http://127.0.0.1:3100/ZHA/company/settings/instance/profile
+结果：标题“个人资料 • 设置 • zhanh • Paperclip”；设置侧栏、Profile、收件箱策略、命令面板均显示简体中文。
+资源入口 SHA-256：808C797B2642C2C347C6CD25A3731F04FFCE2150E7260740EA1EAFEE82406001。
+控制台残留：旧服务端 `/api/auth/preferences` 404 兼容请求和一个头像资源 404；UI 页面加载与交互正常。
+
+补丁同步
+命令：
+  git -c core.quotePath=false -c core.autocrlf=false diff --binary 42c8882e7d374cdacf8603c1449a455a035846f1 -- ui > paperclip-zh-cn.patch
+结果：patch 文件已更新，exit status 0。
+
+最终补丁独立复验（2026-09-29）
+============================
+补丁文件：D:\work station\codex\paperclip-zh-cn\paperclip-zh-cn.patch
+SHA-256：68C3913E7D34B77201982ADA23EFF4F20EB665A0C43C3DE5E83649898C9E9E60
+基线提交：42c8882e7d374cdacf8603c1449a455a035846f1
+
+BASELINE
+副本：D:\work station\codex\paperclip-validation-fresh-20260929
+命令（工作目录：该副本的 ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/i18n/locale-validation.test.ts
+输入：未应用补丁的干净基线。
+输出：Test Files  1 passed (1); Tests  7 passed (7)。exit status 0。
+
+补丁应用检查
+命令：
+  git -C "D:\work station\codex\paperclip-validation-fresh-20260929" apply --check "D:\work station\codex\paperclip-zh-cn\paperclip-zh-cn.patch"
+输入：干净基线副本和上述 SHA-256 的 LF 补丁。
+输出：无输出；exit status 0。随后 git apply 成功。
+
+MODIFIED
+副本：D:\work station\codex\paperclip-validation-fresh-20260929
+命令（工作目录：该副本的 ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/components/CompanySettingsSidebar.test.tsx src/components/access/CompanySettingsNav.test.tsx src/context/BreadcrumbContext.test.tsx src/i18n/locale-validation.test.ts src/i18n/locale-preference.test.ts
+输入：对上述干净基线应用补丁后的源码。
+输出：Test Files  5 passed (5); Tests  34 passed (34)。exit status 0。
+
+命令（工作目录：该副本的 ui）：
+  node node_modules/vite/bin/vite.js build
+输入：应用最终 LF 补丁后的 UI 源码。
+输出：✓ built in 1.84s；exit status 0。保留上游 Vite 配置、CSS ::highlight、动态导入和 chunk 大小警告。
+
+ROLLBACK
+副本：D:\work station\codex\paperclip-rollback-fresh-20260929
+命令：
+  "D:\tool\Git\bin\bash.exe" "D:\work station\codex\paperclip-zh-cn\ROLLBACK.sh" "D:\work station\codex\paperclip-rollback-fresh-20260929"
+输入：在另一份干净基线副本应用最终补丁后的工作树。
+输出：Paperclip 简体中文补丁已回滚：D:\work station\codex\paperclip-rollback-fresh-20260929。exit status 0。
+恢复状态：git status --short --branch 输出“## HEAD (no branch)”，无工作树或索引差异。
+恢复后命令（工作目录：该副本的 ui）：
+  node node_modules/vitest/vitest.mjs run --config vitest.config.ts src/i18n/locale-validation.test.ts
+恢复后输出：Test Files  1 passed (1); Tests  7 passed (7)。exit status 0。
